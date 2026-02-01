@@ -1,0 +1,39 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "nkoteng-farm-app",
+          "appId": "1:749631499385:android:3d63716a717e1a2de738a8",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "nkoteng-farm-app",
+          "configurations": {
+            "android": "1:749631499385:android:3d63716a717e1a2de738a8",
+            "ios": "1:749631499385:ios:4cde1359c6201e90e738a8",
+            "macos": "1:749631499385:ios:4cde1359c6201e90e738a8",
+            "web": "1:749631499385:web:1e691a752757cf9ae738a8",
+            "windows": "1:749631499385:web:a496667fb37c3563e738a8"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
+}

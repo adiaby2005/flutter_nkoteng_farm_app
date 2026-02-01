@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "749631499385",
+    "project_id": "nkoteng-farm-app",
+    "storage_bucket": "nkoteng-farm-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:749631499385:android:3d63716a717e1a2de738a8",
+        "android_client_info": {
+          "package_name": "com.example.nkoteng_farm_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBYwVnEvxSJNEyOuvByPGRTDYb5rIG51aA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
