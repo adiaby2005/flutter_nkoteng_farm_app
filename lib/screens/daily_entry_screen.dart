@@ -1,6 +1,5 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
 import '../models/building.dart';
 import '../services/active_lot_service.dart';
@@ -15,438 +14,422 @@ class DailyEntryScreen extends StatefulWidget {
 }
 
 class _DailyEntryScreenState extends State<DailyEntryScreen> {
-  // =========================
-  // PONTE par calibre
-  // =========================
-  final Map<String, TextEditingController> _alveolesCtrls = {
-    'SMALL': TextEditingController(),
-    'MEDIUM': TextEditingController(),
-    'LARGE': TextEditingController(),
-    'XL': TextEditingController(),
-  };
-
-  final Map<String, TextEditingController> _isolatedCtrls = {
-    'SMALL': TextEditingController(),
-    'MEDIUM': TextEditingController(),
-    'LARGE': TextEditingController(),
-    'XL': TextEditingController(),
-  };
-
-  // =========================
-  // CASSES (collecte bâtiment)
-  // =========================
-  final TextEditingController _brokenAlveolesCtrl = TextEditingController();
-  final TextEditingController _brokenIsolatedCtrl = TextEditingController();
-  final TextEditingController _brokenNoteCtrl = TextEditingController();
-
-  // =========================
-  // ALIMENTS (sacs 50 kg)
-  // =========================
-  final TextEditingController _feedBagsCtrl = TextEditingController(text: "0");
-  String? _selectedFeedItemId;
-  Map<String, dynamic>? _buildingFreshData;
-
-  // =========================
-  // EAU (litres)
-  // =========================
-  String _waterMode = 'MANUAL'; // MANUAL | ESTIMATE
-  final TextEditingController _waterLitersCtrl = TextEditingController(text: "0");
-  final TextEditingController _waterNoteCtrl = TextEditingController();
-  int _waterEstimatedLiters = 0;
-
-  // =========================
-  // MORTALITÉ
-  // =========================
-  final TextEditingController _mortalityQtyCtrl = TextEditingController(text: "0");
-  final TextEditingController _mortalityCauseCtrl = TextEditingController();
-  final TextEditingController _mortalityNoteCtrl = TextEditingController();
-
-  // =========================
-  // VÉTÉRINAIRE (utilisation)
-  // =========================
-  bool _noVetTreatment = false;
-  String? _selectedVetItemId;
-  final TextEditingController _vetQtyCtrl = TextEditingController(text: "0");
-  final TextEditingController _vetNoteCtrl = TextEditingController();
-
-  int? _vetStockOnHand;
-  String _vetUnitLabel = "unité";
-
-  // =========================
-  // State
-  // =========================
-  bool _loading = false;
-  String? _message;
-  DateTime _selectedDate = DateTime.now();
-
-  final _db = FirebaseFirestore.instance;
-
   static const String _farmId = 'farm_nkoteng';
 
-  // -------------------------
-  // Formatters (contrôle saisie)
-  // -------------------------
-  final List<TextInputFormatter> _digitsOnly = [
-    FilteringTextInputFormatter.digitsOnly,
-  ];
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // ✅ Isolés: 0..29 (si tu veux 1..29, remplace min=0 par min=1 dans _MinMaxIntFormatter)
-  final List<TextInputFormatter> _isolatedFormatters = [
-    FilteringTextInputFormatter.digitsOnly,
-    const _MinMaxIntFormatter(min: 0, max: 29),
-  ];
+
+  /// Récupère le lot actif du bâtiment (compat: lit `lotId` ou `activeLotId`)
+  Future<String?> _getActiveLotIdCompat() async {
+    final doc = await _db
+        .collection('farms')
+        .doc(_farmId)
+        .collection('building_active_lots')
+        .doc(widget.building.id)
+        .get(const GetOptions(source: Source.serverAndCache));
+
+    final data = doc.data();
+    if (data == null) return null;
+    if (data['active'] != true) return null;
+
+    final lotId = (data['lotId'] ?? data['activeLotId'] ?? '').toString();
+    return lotId.isEmpty ? null : lotId;
+  }
+
+  DateTime _date = DateTime.now();
+
+  // Eggs by grade: SMALL/MEDIUM/LARGE/XL
+  final _smallTraysCtrl = TextEditingController(text: '0');
+  final _smallIsolatedCtrl = TextEditingController(text: '');
+  final _mediumTraysCtrl = TextEditingController(text: '0');
+  final _mediumIsolatedCtrl = TextEditingController(text: '');
+  final _largeTraysCtrl = TextEditingController(text: '0');
+  final _largeIsolatedCtrl = TextEditingController(text: '');
+  final _xlTraysCtrl = TextEditingController(text: '0');
+  final _xlIsolatedCtrl = TextEditingController(text: '');
+
+  // broken eggs
+  final _brokenTraysCtrl = TextEditingController(text: '0');
+  final _brokenIsolatedCtrl = TextEditingController(text: '');
+
+  // feed
+  String? _selectedFeedItemId;
+  final _feedBagsCtrl = TextEditingController(text: '0');
+
+  // water
+  String _waterMode = 'MANUAL'; // MANUAL | ESTIMATE
+  final _waterLitersCtrl = TextEditingController(text: '0');
+  final _waterNoteCtrl = TextEditingController();
+
+  // vet (multi-produits)
+  bool _noVetTreatment = true;
+  final _vetNoteCtrl = TextEditingController();
+  final List<_VetLine> _vetLines = [];
+  List<_VetItem> _vetItems = const [];
+  bool _loadingVetItems = false;
+
+  // mortality
+  final _mortalityQtyCtrl = TextEditingController(text: '0');
+  final _mortalityCauseCtrl = TextEditingController();
+  final _mortalityNoteCtrl = TextEditingController();
+
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-    _loadBuildingFresh();
-  }
-
-  Future<void> _loadBuildingFresh() async {
-    try {
-      final doc = await _db
-          .collection('farms')
-          .doc(_farmId)
-          .collection('buildings')
-          .doc(widget.building.id)
-          .get();
-
-      if (doc.exists) {
-        setState(() {
-          _buildingFreshData = doc.data();
-
-          final def = _defaultFeedItemIdFromBuilding();
-          if (_selectedFeedItemId == null && def != null) {
-            _selectedFeedItemId = def;
-          }
-        });
-      }
-    } catch (_) {
-      // offline / permissions : ignore
-    }
+    _vetLines.add(_VetLine());
+    _loadVetItems();
   }
 
   @override
   void dispose() {
-    for (final c in _alveolesCtrls.values) {
-      c.dispose();
-    }
-    for (final c in _isolatedCtrls.values) {
-      c.dispose();
-    }
+    _smallTraysCtrl.dispose();
+    _smallIsolatedCtrl.dispose();
+    _mediumTraysCtrl.dispose();
+    _mediumIsolatedCtrl.dispose();
+    _largeTraysCtrl.dispose();
+    _largeIsolatedCtrl.dispose();
+    _xlTraysCtrl.dispose();
+    _xlIsolatedCtrl.dispose();
 
-    _brokenAlveolesCtrl.dispose();
+    _brokenTraysCtrl.dispose();
     _brokenIsolatedCtrl.dispose();
-    _brokenNoteCtrl.dispose();
 
     _feedBagsCtrl.dispose();
 
     _waterLitersCtrl.dispose();
     _waterNoteCtrl.dispose();
 
+    _vetNoteCtrl.dispose();
+    for (final l in _vetLines) {
+      l.dispose();
+    }
+
     _mortalityQtyCtrl.dispose();
     _mortalityCauseCtrl.dispose();
     _mortalityNoteCtrl.dispose();
-
-    _vetQtyCtrl.dispose();
-    _vetNoteCtrl.dispose();
 
     super.dispose();
   }
 
   // =========================
-  // Utils
+  // Helpers
   // =========================
   String _dateIso(DateTime d) {
-    return "${d.year.toString().padLeft(4, '0')}-"
-        "${d.month.toString().padLeft(2, '0')}-"
-        "${d.day.toString().padLeft(2, '0')}";
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '${d.year}-$m-$day';
   }
 
-  String _dailyEntryDocId(String dateIso) => "${widget.building.id}_$dateIso";
+  int _parseInt(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
 
-  DocumentReference<Map<String, dynamic>> _dailyEntryRef(String dateIso) {
-    return _db.collection('farms').doc(_farmId).collection('daily_entries').doc(_dailyEntryDocId(dateIso));
+  int _traysToEggs(int trays) => trays * 30;
+
+  int _isolatedEggs(TextEditingController c) {
+    final t = c.text.trim();
+    if (t.isEmpty) return 0;
+    return int.tryParse(t) ?? 0;
   }
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(now.year - 2),
-      lastDate: DateTime(now.year + 1),
-    );
-    if (picked != null) {
-      setState(() => _selectedDate = picked);
+  int _asInt(dynamic v) => (v is num) ? v.toInt() : int.tryParse('${v ?? 0}') ?? 0;
+
+  void _validateIsolated1to29OrEmpty(TextEditingController c, String label) {
+    final t = c.text.trim();
+    if (t.isEmpty) return;
+    final v = int.tryParse(t);
+    if (v == null || v < 1 || v > 29) {
+      throw Exception("$label : les oeufs isolés doivent être entre 1 et 29 (ou vide).");
     }
   }
 
-  int _parseInt(TextEditingController c) {
-    return int.tryParse(c.text.trim()) ?? 0;
+  DocumentReference<Map<String, dynamic>> _farmRef() => _db.collection('farms').doc(_farmId);
+
+  DocumentReference<Map<String, dynamic>> _dailyEntryRef(String dateIso) {
+    return _farmRef().collection('daily_entries').doc('${widget.building.id}_$dateIso');
   }
 
-  int _getInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v.trim()) ?? 0;
+  void _snack(String msg, {required bool ok}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: ok ? Colors.green : Colors.red),
+    );
+  }
+
+  // =========================
+  // Vet items list
+  // =========================
+  Future<void> _loadVetItems() async {
+    setState(() => _loadingVetItems = true);
+    try {
+      final snap = await _farmRef()
+          .collection('items')
+          .get(const GetOptions(source: Source.serverAndCache));
+
+      final items = <_VetItem>[];
+      for (final d in snap.docs) {
+        final data = d.data();
+        final name = (data['name'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+
+        final type = (data['type'] ?? '').toString().toUpperCase();
+        final category = (data['category'] ?? '').toString().toUpperCase();
+        final kind = (data['kind'] ?? '').toString().toUpperCase();
+        final isVet = data['isVet'] == true;
+
+        items.add(_VetItem(
+          id: d.id,
+          name: name,
+          unitLabel: (data['unitLabel'] ?? '').toString().trim().isEmpty
+              ? 'unité'
+              : (data['unitLabel'] ?? '').toString().trim(),
+          isVet: isVet ||
+              type == 'VET' ||
+              category == 'VET' ||
+              kind == 'VET' ||
+              category.contains('VET') ||
+              type.contains('VET'),
+        ));
+      }
+
+      final vetOnly = items.where((e) => e.isVet).toList();
+      setState(() {
+        _vetItems = vetOnly.isNotEmpty ? vetOnly : items;
+      });
+    } catch (_) {
+      setState(() => _vetItems = const []);
+    } finally {
+      if (mounted) setState(() => _loadingVetItems = false);
+    }
+  }
+
+  // ✅ FIX: support two schemas for stocks_items:
+  // 1) docId == itemId
+  // 2) docId auto, with field { itemId: ... }
+  Future<void> _loadVetStockForLine(_VetLine line, String itemId) async {
+    try {
+      final col = _farmRef().collection('stocks_items');
+
+      // Try direct doc(itemId)
+      final direct = await col.doc(itemId).get(const GetOptions(source: Source.serverAndCache));
+      Map<String, dynamic>? data;
+      if (direct.exists) {
+        data = direct.data();
+      } else {
+        // Fallback: query by itemId field
+        final q = await col
+            .where('itemId', isEqualTo: itemId)
+            .limit(1)
+            .get(const GetOptions(source: Source.serverAndCache));
+        if (q.docs.isNotEmpty) data = q.docs.first.data();
+      }
+
+      final qtyOnHand = (data?['qtyOnHand'] is num) ? (data!['qtyOnHand'] as num).toInt() : 0;
+      final unit = (data?['unitLabel'] ?? '').toString().trim();
+
+      if (!mounted) return;
+      setState(() {
+        line.stockOnHand = qtyOnHand;
+        if (unit.isNotEmpty) line.unitLabel = unit;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        line.stockOnHand = null;
+      });
+    }
+  }
+
+  // =========================
+  // Water estimate
+  // =========================
+  Future<int> _estimateWaterLiters() async {
+    const litersPerHen = 0.25;
+
+    // ✅ Estimation basée sur le stock sujets (plus fiable que la capacité)
+    final farmRef = _db.collection('farms').doc(_farmId);
+    final stockRef =
+    farmRef.collection('stocks_subjects').doc('BUILDING_${widget.building.id}');
+
+    try {
+      final snap = await stockRef.get(const GetOptions(source: Source.serverAndCache));
+      final data = snap.data();
+      final onHand = _asInt(data?['totalOnHand']);
+      final base = onHand > 0 ? onHand : widget.building.capacity;
+      if (base > 0) return (base * litersPerHen).round();
+    } catch (_) {
+      // fallback below
+    }
+
+    final cap = widget.building.capacity;
+    if (cap > 0) return (cap * litersPerHen).round();
     return 0;
   }
 
-  bool _validateIsolated0to29(int v) => v >= 0 && v <= 29;
-
-  int _totalEggsForGrade(String grade) {
-    final alveoles = _parseInt(_alveolesCtrls[grade]!);
-    final isolated = _parseInt(_isolatedCtrls[grade]!);
-    return alveoles * 30 + isolated;
-  }
-
-  int _totalEggsAllGrades() {
-    int total = 0;
-    for (final g in _alveolesCtrls.keys) {
-      total += _totalEggsForGrade(g);
-    }
-    return total;
-  }
-
-  String? _defaultFeedItemIdFromBuilding() {
-    final data = _buildingFreshData;
-    final v = data == null ? null : data['defaultFeedItemId'];
-    if (v is String && v.isNotEmpty) return v;
-    return null;
+  Future<void> _applyWaterEstimateIfNeeded() async {
+    if (_waterMode != 'ESTIMATE') return;
+    final liters = await _estimateWaterLiters();
+    if (!mounted) return;
+    setState(() {
+      _waterLitersCtrl.text = liters.toString();
+      if (_waterNoteCtrl.text.trim().isEmpty && liters > 0) {
+        _waterNoteCtrl.text = "Estimation automatique";
+      }
+    });
   }
 
   // =========================
-  // ESTIMATION EAU ✅ FIX cast int/num/String
-  // =========================
-  Future<int> _computeEstimatedWaterLiters() async {
-    final farmRef = _db.collection('farms').doc(_farmId);
-    final doc = await farmRef.collection('building_active_lots').doc(widget.building.id).get();
-
-    final qtyRaw = doc.data()?['qty'];
-    final qty = _getInt(qtyRaw);
-
-    // 0.25 L / sujet / jour
-    return (qty * 0.25).round();
-  }
-
-  // =========================
-  // Validations
-  // =========================
-  void _validateVetBeforeSave() {
-    if (_noVetTreatment) return;
-
-    final itemId = _selectedVetItemId;
-    final qty = _parseInt(_vetQtyCtrl);
-
-    if ((itemId == null || itemId.isEmpty) && qty > 0) {
-      throw Exception("Vétérinaire : sélectionnez un produit.");
-    }
-    if (itemId != null && itemId.isNotEmpty && qty <= 0) {
-      throw Exception("Vétérinaire : quantité > 0 requise.");
-    }
-
-    if (_vetStockOnHand != null && qty > _vetStockOnHand!) {
-      throw Exception("Vétérinaire : quantité ($qty) > stock (${_vetStockOnHand!}).");
-    }
-  }
-
-  // =========================
-  // Enregistrement "tout en un"
+  // Save all
   // =========================
   Future<void> _saveAll() async {
-    setState(() {
-      _loading = true;
-      _message = null;
-    });
+    if (_saving) return;
 
-    final List<String> ok = [];
+    final dateIso = _dateIso(_date);
+
+    _validateIsolated1to29OrEmpty(_smallIsolatedCtrl, "SMALL");
+    _validateIsolated1to29OrEmpty(_mediumIsolatedCtrl, "MEDIUM");
+    _validateIsolated1to29OrEmpty(_largeIsolatedCtrl, "LARGE");
+    _validateIsolated1to29OrEmpty(_xlIsolatedCtrl, "XL");
+    _validateIsolated1to29OrEmpty(_brokenIsolatedCtrl, "Casses");
+
+    setState(() => _saving = true);
+
     try {
-      _validateVetBeforeSave();
-
-      final dateIso = _dateIso(_selectedDate);
-
-      await _dailyEntryRef(dateIso).set({
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'buildingName': widget.building.name,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      }, SetOptions(merge: true));
-
-      final prodRes = await _saveProductionIfAny(dateIso);
-      if (prodRes != null) ok.add(prodRes);
-
-      final brokenRes = await _saveBrokenIfAny(dateIso);
-      if (brokenRes != null) ok.add(brokenRes);
-
-      final feedRes = await _saveFeedIfAny(dateIso);
-      if (feedRes != null) ok.add(feedRes);
-
+      final eggsRes = await _saveEggsAndBrokenDelta(dateIso);
+      final feedRes = await _saveFeedDelta(dateIso);
       final waterRes = await _saveWaterIfAny(dateIso);
-      if (waterRes != null) ok.add(waterRes);
+      final vetRes = await _saveVetDelta(dateIso);
+      final mortRes = await _saveMortalitySafe(dateIso);
 
-      final vetRes = await _saveVetUseIfAny(dateIso);
-      if (vetRes != null) ok.add(vetRes);
+      final parts = <String>[
+        if (eggsRes != null) eggsRes,
+        if (feedRes != null) feedRes,
+        if (waterRes != null) waterRes,
+        if (vetRes != null) vetRes,
+        if (mortRes != null) mortRes,
+      ];
 
-      final mortRes = await _saveMortalityIfAny(dateIso);
-      if (mortRes != null) ok.add(mortRes);
-
-      if (ok.isEmpty) {
-        setState(() => _message = "Rien à enregistrer (tous les champs sont vides).");
-        return;
-      }
-
-      await _dailyEntryRef(dateIso).set({
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      setState(() => _message = "Enregistré : ${ok.join(' • ')}");
+      _snack(parts.isEmpty ? "Rien à enregistrer" : parts.join(" | "), ok: true);
     } catch (e) {
-      setState(() => _message = "Erreur : ${e.toString()}");
+      _snack(e.toString(), ok: false);
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   // =========================
-  // PONTE ✅ + maj BUILDING_* ET FARM_GLOBAL
+  // EGGS + BROKEN (delta + dot fields + totals)
   // =========================
-  Future<String?> _saveProductionIfAny(String dateIso) async {
-    for (final g in _isolatedCtrls.keys) {
-      final iso = _parseInt(_isolatedCtrls[g]!);
-      if (!_validateIsolated0to29(iso)) {
-        throw Exception("Œufs isolés ($g) doit être entre 0 et 29.");
-      }
+  Future<String?> _saveEggsAndBrokenDelta(String dateIso) async {
+    final newSmall =
+        _traysToEggs(_parseInt(_smallTraysCtrl)) + _isolatedEggs(_smallIsolatedCtrl);
+    final newMedium =
+        _traysToEggs(_parseInt(_mediumTraysCtrl)) + _isolatedEggs(_mediumIsolatedCtrl);
+    final newLarge =
+        _traysToEggs(_parseInt(_largeTraysCtrl)) + _isolatedEggs(_largeIsolatedCtrl);
+    final newXl = _traysToEggs(_parseInt(_xlTraysCtrl)) + _isolatedEggs(_xlIsolatedCtrl);
+
+    final newBroken =
+        _traysToEggs(_parseInt(_brokenTraysCtrl)) + _isolatedEggs(_brokenIsolatedCtrl);
+
+    final newGoodTotal = newSmall + newMedium + newLarge + newXl;
+
+    if (newGoodTotal < 0 || newBroken < 0) {
+      throw Exception("Oeufs : valeurs négatives interdites.");
     }
+    if (newGoodTotal == 0 && newBroken == 0) return null;
 
-    final totalEggs = _totalEggsAllGrades();
-    if (totalEggs <= 0) return null;
-
-    final lotId = await ActiveLotService.getActiveLotIdForBuilding(widget.building.id);
-
-    final uniqueKey = [
-      'PRODUCTION',
-      _farmId,
-      dateIso,
-      widget.building.id,
-    ].join('|');
-
-    final farmRef = _db.collection('farms').doc(_farmId);
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-
-    final prodRef = farmRef.collection('daily_production').doc();
-    final stockBuildingRef = farmRef.collection('stocks_eggs').doc("BUILDING_${widget.building.id}");
-    final stockFarmRef = farmRef.collection('stocks_eggs').doc("FARM_GLOBAL");
+    final farmRef = _farmRef();
     final entryRef = _dailyEntryRef(dateIso);
 
-    final Map<String, int> eggsByGrade = {
-      'SMALL': _totalEggsForGrade('SMALL'),
-      'MEDIUM': _totalEggsForGrade('MEDIUM'),
-      'LARGE': _totalEggsForGrade('LARGE'),
-      'XL': _totalEggsForGrade('XL'),
-    };
+    final buildingStockRef =
+    farmRef.collection('stocks_eggs').doc('BUILDING_${widget.building.id}');
+    final farmGlobalRef = farmRef.collection('stocks_eggs').doc('FARM_GLOBAL');
 
-    bool didWrite = false;
+    int oldGoodTotal = 0, oldBroken = 0;
+    int deltaGoodTotal = 0, deltaBroken = 0;
+    int deltaSmall = 0, deltaMedium = 0, deltaLarge = 0, deltaXl = 0;
 
     await _db.runTransaction((tx) async {
-      final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        didWrite = false;
+      final entrySnap = await tx.get(entryRef);
+      final entry = entrySnap.data() ?? <String, dynamic>{};
+      final eggs = (entry['eggs'] is Map) ? (entry['eggs'] as Map) : <String, dynamic>{};
+      final oldGoodByGrade =
+      (eggs['goodByGrade'] is Map) ? (eggs['goodByGrade'] as Map) : <String, dynamic>{};
+
+      final oldSmall = _asInt(oldGoodByGrade['SMALL']);
+      final oldMedium = _asInt(oldGoodByGrade['MEDIUM']);
+      final oldLarge = _asInt(oldGoodByGrade['LARGE']);
+      final oldXl = _asInt(oldGoodByGrade['XL']);
+      oldBroken = _asInt(eggs['brokenTotalEggs']);
+      oldGoodTotal = oldSmall + oldMedium + oldLarge + oldXl;
+
+      deltaSmall = newSmall - oldSmall;
+      deltaMedium = newMedium - oldMedium;
+      deltaLarge = newLarge - oldLarge;
+      deltaXl = newXl - oldXl;
+      deltaBroken = newBroken - oldBroken;
+      deltaGoodTotal = newGoodTotal - oldGoodTotal;
+
+      if (deltaSmall == 0 && deltaMedium == 0 && deltaLarge == 0 && deltaXl == 0 && deltaBroken == 0) {
         return;
       }
 
-      final buildingSnap = await tx.get(stockBuildingRef);
-      final farmSnap = await tx.get(stockFarmRef);
+      // BUILDING (create if missing) + update with dot-paths
+      tx.set(
+        buildingStockRef,
+        {
+          'updatedAt': FieldValue.serverTimestamp(),
+          'source': 'daily_entry',
+          'buildingId': widget.building.id,
+        },
+        SetOptions(merge: true),
+      );
 
-      didWrite = true;
-
-      tx.set(prodRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'lotId': lotId,
-        'eggsByGrade': eggsByGrade,
-        'totalEggs': totalEggs,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
+      tx.update(buildingStockRef, <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+        'goodTotalEggs': FieldValue.increment(deltaGoodTotal),
+        'brokenTotalEggs': FieldValue.increment(deltaBroken),
+        'eggsByGrade.SMALL': FieldValue.increment(deltaSmall),
+        'eggsByGrade.MEDIUM': FieldValue.increment(deltaMedium),
+        'eggsByGrade.LARGE': FieldValue.increment(deltaLarge),
+        'eggsByGrade.XL': FieldValue.increment(deltaXl),
       });
 
-      // BUILDING STOCK
-      final Map<String, dynamic> bData = buildingSnap.exists ? (buildingSnap.data() ?? {}) : <String, dynamic>{};
-      final Map<String, dynamic> bByGradeDyn = (bData['eggsByGrade'] is Map)
-          ? Map<String, dynamic>.from(bData['eggsByGrade'])
-          : <String, dynamic>{};
-
-      final int bSmall = _getInt(bByGradeDyn['SMALL']);
-      final int bMed = _getInt(bByGradeDyn['MEDIUM']);
-      final int bLarge = _getInt(bByGradeDyn['LARGE']);
-      final int bXl = _getInt(bByGradeDyn['XL']);
-
-      final Map<String, int> bNewByGrade = {
-        'SMALL': bSmall + (eggsByGrade['SMALL'] ?? 0),
-        'MEDIUM': bMed + (eggsByGrade['MEDIUM'] ?? 0),
-        'LARGE': bLarge + (eggsByGrade['LARGE'] ?? 0),
-        'XL': bXl + (eggsByGrade['XL'] ?? 0),
-      };
-
-      final int bGoodTotal = _getInt(bData['goodTotalEggs'] ?? bData['totalGoodEggs']);
-
+      // FARM_GLOBAL (create if missing) + update with dot-paths
       tx.set(
-        stockBuildingRef,
+        farmGlobalRef,
         {
-          'kind': 'BUILDING',
-          'refId': widget.building.id,
-          'eggsByGrade': bNewByGrade,
-          'goodByGrade': bNewByGrade,
-          'goodTotalEggs': bGoodTotal + totalEggs,
           'updatedAt': FieldValue.serverTimestamp(),
+          'source': 'daily_entry',
         },
         SetOptions(merge: true),
       );
 
-      // FARM_GLOBAL STOCK
-      final Map<String, dynamic> fData = farmSnap.exists ? (farmSnap.data() ?? {}) : <String, dynamic>{};
-      final Map<String, dynamic> fByGradeDyn = (fData['eggsByGrade'] is Map)
-          ? Map<String, dynamic>.from(fData['eggsByGrade'])
-          : (fData['goodByGrade'] is Map)
-          ? Map<String, dynamic>.from(fData['goodByGrade'])
-          : <String, dynamic>{};
+      tx.update(farmGlobalRef, <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+        'goodTotalEggs': FieldValue.increment(deltaGoodTotal),
+        'brokenTotalEggs': FieldValue.increment(deltaBroken),
+        'eggsByGrade.SMALL': FieldValue.increment(deltaSmall),
+        'eggsByGrade.MEDIUM': FieldValue.increment(deltaMedium),
+        'eggsByGrade.LARGE': FieldValue.increment(deltaLarge),
+        'eggsByGrade.XL': FieldValue.increment(deltaXl),
+      });
 
-      final int fSmall = _getInt(fByGradeDyn['SMALL']);
-      final int fMed = _getInt(fByGradeDyn['MEDIUM']);
-      final int fLarge = _getInt(fByGradeDyn['LARGE']);
-      final int fXl = _getInt(fByGradeDyn['XL']);
-
-      final Map<String, int> fNewByGrade = {
-        'SMALL': fSmall + (eggsByGrade['SMALL'] ?? 0),
-        'MEDIUM': fMed + (eggsByGrade['MEDIUM'] ?? 0),
-        'LARGE': fLarge + (eggsByGrade['LARGE'] ?? 0),
-        'XL': fXl + (eggsByGrade['XL'] ?? 0),
-      };
-
-      final int fGoodTotal = _getInt(fData['goodTotalEggs'] ?? fData['totalGoodEggs']);
-
-      tx.set(
-        stockFarmRef,
-        {
-          'kind': 'FARM',
-          'refId': 'FARM_GLOBAL',
-          'eggsByGrade': fNewByGrade,
-          'goodByGrade': fNewByGrade,
-          'goodTotalEggs': fGoodTotal + totalEggs,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
+      // daily entry
       tx.set(
         entryRef,
         {
-          'production': {
-            'lotId': lotId,
-            'eggsByGrade': eggsByGrade,
-            'totalEggs': totalEggs,
+          'date': dateIso,
+          'buildingId': widget.building.id,
+          'eggs': {
+            'goodByGrade': {
+              'SMALL': newSmall,
+              'MEDIUM': newMedium,
+              'LARGE': newLarge,
+              'XL': newXl,
+            },
+            'brokenTotalEggs': newBroken,
             'savedAt': FieldValue.serverTimestamp(),
           },
           'updatedAt': FieldValue.serverTimestamp(),
@@ -454,194 +437,153 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         },
         SetOptions(merge: true),
       );
-
-      tx.set(lockRef, {
-        'kind': 'DAILY_PRODUCTION',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
     });
 
-    if (!didWrite) return "Ponte déjà enregistrée";
-
-    for (final c in _alveolesCtrls.values) c.clear();
-    for (final c in _isolatedCtrls.values) c.clear();
-
-    return "Ponte OK (+$totalEggs)";
-  }
-
-  // =========================
-  // CASSES ✅ + maj BUILDING_* ET FARM_GLOBAL
-  // =========================
-  Future<String?> _saveBrokenIfAny(String dateIso) async {
-    final brokenAlv = _parseInt(_brokenAlveolesCtrl);
-    final brokenIso = _parseInt(_brokenIsolatedCtrl);
-
-    if (brokenAlv < 0 || brokenIso < 0) {
-      throw Exception("Casses : valeurs négatives interdites.");
-    }
-    if (brokenAlv == 0 && brokenIso == 0) return null;
-
-    if (!_validateIsolated0to29(brokenIso)) {
-      throw Exception("Casses : œufs isolés doit être entre 0 et 29.");
-    }
-
-    final totalBroken = brokenAlv * 30 + brokenIso;
-    if (totalBroken <= 0) return null;
-
-    final farmRef = _db.collection('farms').doc(_farmId);
-
-    final uniqueKey = [
-      'BROKEN_IN',
-      _farmId,
-      dateIso,
-      widget.building.id,
-      brokenAlv.toString(),
-      brokenIso.toString(),
-    ].join('|');
-
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-    final inflowRef = farmRef.collection('broken_egg_inflows').doc();
-    final stockBuildingRef = farmRef.collection('stocks_eggs').doc("BUILDING_${widget.building.id}");
-    final stockFarmRef = farmRef.collection('stocks_eggs').doc("FARM_GLOBAL");
-    final entryRef = _dailyEntryRef(dateIso);
-
-    final note = _brokenNoteCtrl.text.trim().isEmpty ? null : _brokenNoteCtrl.text.trim();
-
-    bool didWrite = false;
-
-    await _db.runTransaction((tx) async {
-      final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        didWrite = false;
-        return;
-      }
-
-      final bSnap = await tx.get(stockBuildingRef);
-      final fSnap = await tx.get(stockFarmRef);
-
-      didWrite = true;
-
-      final int bCurrentBroken = bSnap.exists ? _getInt(bSnap.data()?['brokenTotalEggs']) : 0;
-      final int fCurrentBroken = fSnap.exists ? _getInt(fSnap.data()?['brokenTotalEggs']) : 0;
-
-      tx.set(inflowRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'type': 'DAILY_COLLECTION',
-        'brokenAlveoles': brokenAlv,
-        'brokenIsolated': brokenIso,
-        'totalBrokenEggs': totalBroken,
-        'note': note,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      });
-
-      tx.set(
-        stockBuildingRef,
-        {
-          'kind': 'BUILDING',
-          'refId': widget.building.id,
-          'brokenTotalEggs': bCurrentBroken + totalBroken,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
-      tx.set(
-        stockFarmRef,
-        {
-          'kind': 'FARM',
-          'refId': 'FARM_GLOBAL',
-          'brokenTotalEggs': fCurrentBroken + totalBroken,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
-      tx.set(
-        entryRef,
-        {
-          'broken': {
-            'brokenAlveoles': brokenAlv,
-            'brokenIsolated': brokenIso,
-            'totalBrokenEggs': totalBroken,
-            'note': note,
-            'savedAt': FieldValue.serverTimestamp(),
-          },
-          'updatedAt': FieldValue.serverTimestamp(),
-          'source': 'mobile_app',
-        },
-        SetOptions(merge: true),
-      );
-
-      tx.set(lockRef, {
-        'kind': 'BROKEN_EGG_INFLOW',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-    });
-
-    if (!didWrite) return "Casses déjà enregistrées";
-
-    _brokenAlveolesCtrl.clear();
+    _smallTraysCtrl.text = "0";
+    _smallIsolatedCtrl.clear();
+    _mediumTraysCtrl.text = "0";
+    _mediumIsolatedCtrl.clear();
+    _largeTraysCtrl.text = "0";
+    _largeIsolatedCtrl.clear();
+    _xlTraysCtrl.text = "0";
+    _xlIsolatedCtrl.clear();
+    _brokenTraysCtrl.text = "0";
     _brokenIsolatedCtrl.clear();
-    _brokenNoteCtrl.clear();
 
-    return "Casses OK (+$totalBroken)";
+    if (oldGoodTotal == 0 && oldBroken == 0) {
+      return "Oeufs OK (+$newGoodTotal / cassés +$newBroken)";
+    }
+    return "Oeufs OK (maj Δ bon=$deltaGoodTotal / Δ cassés=$deltaBroken)";
   }
 
   // =========================
-  // ALIMENTS
+  // FEED (delta)
+  // - If user modifies same day, adjust stock with delta
+  // - If user changes item, return old qty to old item and take new qty from new item
   // =========================
-  Future<String?> _saveFeedIfAny(String dateIso) async {
-    final bags = _parseInt(_feedBagsCtrl);
-    if (bags < 0) throw Exception("Aliments : sacs négatifs interdits.");
-    if (bags == 0) return null;
+  Future<String?> _saveFeedDelta(String dateIso) async {
+    final newItemId = _selectedFeedItemId;
+    final newBags = _parseInt(_feedBagsCtrl);
 
-    final feedItemId = _selectedFeedItemId;
-    if (feedItemId == null || feedItemId.isEmpty) {
-      throw Exception("Aliments : veuillez sélectionner un aliment.");
-    }
+    if (newItemId == null || newItemId.isEmpty) return null;
+    if (newBags < 0) throw Exception("Aliments : quantité négative interdite.");
+    if (newBags == 0) return null;
 
-    final farmRef = _db.collection('farms').doc(_farmId);
-
-    final uniqueKey = [
-      'FEED_CONS',
-      _farmId,
-      dateIso,
-      widget.building.id,
-      feedItemId,
-      bags.toString(),
-    ].join('|');
-
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-    final consRef = farmRef.collection('feed_consumptions').doc();
+    final farmRef = _farmRef();
     final entryRef = _dailyEntryRef(dateIso);
 
-    bool didWrite = false;
+    final newStockRef = farmRef.collection('stocks_items').doc(newItemId);
+
+    // deterministic movement doc (overwrite = net for the day)
+    String movementDocId(String itemId) => 'FEED_${widget.building.id}_$dateIso\_$itemId';
+
+    int oldBags = 0;
+    String? oldItemId;
 
     await _db.runTransaction((tx) async {
-      final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        didWrite = false;
+      final entrySnap = await tx.get(entryRef);
+      final entry = entrySnap.data() ?? <String, dynamic>{};
+      final feed = (entry['feed'] is Map) ? (entry['feed'] as Map) : <String, dynamic>{};
+
+      oldItemId = (feed['feedItemId'] ?? '').toString().trim();
+      oldBags = _asInt(feed['bags50']);
+
+      // If feed was previously saved with an item
+      final hasOld = oldItemId != null && oldItemId!.isNotEmpty && oldBags > 0;
+
+      if (hasOld && oldItemId == newItemId && oldBags == newBags) {
+        // no change
         return;
       }
-      didWrite = true;
 
-      tx.set(consRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'itemId': feedItemId,
-        'bags50kg': bags,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      });
+      // 1) If changing item OR decreasing/increasing -> compute stock adjustments
+      // Return old bags to old item if needed
+      if (hasOld) {
+        final oldStockRef = farmRef.collection('stocks_items').doc(oldItemId!);
+        final oldStockSnap = await tx.get(oldStockRef);
+        final oldStock = oldStockSnap.data() as Map<String, dynamic>?;
 
+        final oldQtyOnHand =
+        (oldStock?['qtyOnHand'] is num) ? (oldStock!['qtyOnHand'] as num).toInt() : 0;
+
+        // add back oldBags to old item stock
+        tx.set(
+          oldStockRef,
+          {
+            'qtyOnHand': oldQtyOnHand + oldBags,
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+
+        // update movement doc for old item to 0 (net for the day = removed)
+        final oldMovRef = farmRef.collection('items_movements').doc(movementDocId(oldItemId!));
+        tx.set(
+          oldMovRef,
+          {
+            'date': dateIso,
+            'type': 'OUT',
+            'itemId': oldItemId,
+            'qty': 0, // net = 0 after modification
+            'unitLabel': 'sac',
+            'from': {'kind': 'FARM'},
+            'to': {'kind': 'BUILDING', 'id': widget.building.id},
+            'reason': 'FEED_CONSUMPTION',
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'source': 'mobile_app',
+          },
+          SetOptions(merge: true),
+        );
+      }
+
+      // 2) Take newBags from new item
+      final newStockSnap = await tx.get(newStockRef);
+      final newStock = newStockSnap.data() as Map<String, dynamic>?;
+      final newQtyOnHand =
+      (newStock?['qtyOnHand'] is num) ? (newStock!['qtyOnHand'] as num).toInt() : 0;
+
+      if (newQtyOnHand < newBags) {
+        throw Exception("Stock aliments insuffisant : $newQtyOnHand sacs dispo.");
+      }
+
+      tx.set(
+        newStockRef,
+        {
+          'qtyOnHand': newQtyOnHand - newBags,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+
+      // deterministic movement for new item: qty = newBags (net for the day)
+      final newMovRef = farmRef.collection('items_movements').doc(movementDocId(newItemId));
+      tx.set(
+        newMovRef,
+        {
+          'date': dateIso,
+          'type': 'OUT',
+          'itemId': newItemId,
+          'qty': newBags,
+          'unitLabel': 'sac',
+          'from': {'kind': 'FARM'},
+          'to': {'kind': 'BUILDING', 'id': widget.building.id},
+          'reason': 'FEED_CONSUMPTION',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'source': 'mobile_app',
+        },
+        SetOptions(merge: true),
+      );
+
+      // Save to daily entry
       tx.set(
         entryRef,
         {
           'feed': {
-            'itemId': feedItemId,
-            'bags50kg': bags,
+            'none': false,
+            'feedItemId': newItemId,
+            'bags50': newBags,
             'savedAt': FieldValue.serverTimestamp(),
           },
           'updatedAt': FieldValue.serverTimestamp(),
@@ -649,43 +591,27 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         },
         SetOptions(merge: true),
       );
-
-      tx.set(lockRef, {
-        'kind': 'FEED_CONSUMPTION',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
     });
 
-    if (!didWrite) return "Aliments déjà enregistrés";
-
     _feedBagsCtrl.text = "0";
-    return "Aliments OK (-$bags sacs)";
+    if (oldItemId == null || oldItemId!.isEmpty) return "Aliments OK (-$newBags sacs)";
+    return "Aliments OK (maj possible)";
   }
 
   // =========================
-  // EAU
+  // WATER (idempotent as before)
   // =========================
   Future<String?> _saveWaterIfAny(String dateIso) async {
-    final liters = int.tryParse(_waterLitersCtrl.text.trim()) ?? 0;
-    if (liters < 0) throw Exception("Eau : litres négatifs interdits.");
-    if (liters == 0) return null;
+    final liters = _parseInt(_waterLitersCtrl);
+    if (liters < 0) throw Exception("Eau : quantité négative interdite.");
+    if (liters == 0 && _waterNoteCtrl.text.trim().isEmpty) return null;
 
-    final farmRef = _db.collection('farms').doc(_farmId);
-
-    final uniqueKey = [
-      'WATER',
-      _farmId,
-      dateIso,
-      widget.building.id,
-      _waterMode,
-      liters.toString(),
-    ].join('|');
-
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-    final waterRef = farmRef.collection('daily_water_consumption').doc();
+    final farmRef = _farmRef();
     final entryRef = _dailyEntryRef(dateIso);
 
-    final note = _waterNoteCtrl.text.trim().isEmpty ? null : _waterNoteCtrl.text.trim();
+    // Keep idempotency for water (optional)
+    final uniqueKey = ['WATER', _farmId, dateIso, widget.building.id, liters.toString(), _waterMode].join('|');
+    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
 
     bool didWrite = false;
 
@@ -696,16 +622,6 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         return;
       }
       didWrite = true;
-
-      tx.set(waterRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'mode': _waterMode,
-        'liters': liters,
-        'note': note,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      });
 
       tx.set(
         entryRef,
@@ -713,7 +629,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
           'water': {
             'mode': _waterMode,
             'liters': liters,
-            'note': note,
+            'note': _waterNoteCtrl.text.trim().isEmpty ? null : _waterNoteCtrl.text.trim(),
             'savedAt': FieldValue.serverTimestamp(),
           },
           'updatedAt': FieldValue.serverTimestamp(),
@@ -722,76 +638,160 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         SetOptions(merge: true),
       );
 
-      tx.set(lockRef, {
-        'kind': 'WATER_CONSUMPTION',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      tx.set(lockRef, {'kind': 'DAILY_WATER', 'createdAt': FieldValue.serverTimestamp()});
     });
 
     if (!didWrite) return "Eau déjà enregistrée";
 
-    _waterLitersCtrl.text = "0";
     _waterNoteCtrl.clear();
-
-    return "Eau OK (-$liters L)";
+    _waterLitersCtrl.text = "0";
+    return "Eau OK ($liters L)";
   }
 
   // =========================
-  // VÉTÉRINAIRE
+  // VET (delta, multi items)
+  // - aggregates by itemId
+  // - adjusts stocks_items with delta
+  // - deterministic movements per item per day
+  // - if "aucun traitement" => restore previous usage if any
   // =========================
-  Future<String?> _saveVetUseIfAny(String dateIso) async {
-    if (_noVetTreatment) return null;
-
-    final itemId = _selectedVetItemId;
-    final qty = _parseInt(_vetQtyCtrl);
-    if (itemId == null || itemId.isEmpty || qty <= 0) return null;
-
-    final farmRef = _db.collection('farms').doc(_farmId);
-
-    final uniqueKey = [
-      'VET_USE',
-      _farmId,
-      dateIso,
-      widget.building.id,
-      itemId,
-      qty.toString(),
-    ].join('|');
-
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-    final useRef = farmRef.collection('vet_usages').doc();
+  Future<String?> _saveVetDelta(String dateIso) async {
+    final farmRef = _farmRef();
     final entryRef = _dailyEntryRef(dateIso);
 
-    final note = _vetNoteCtrl.text.trim().isEmpty ? null : _vetNoteCtrl.text.trim();
+    // Build new usage map
+    final Map<String, int> newUsed = {};
+    if (!_noVetTreatment) {
+      for (final line in _vetLines) {
+        final qty = _parseInt(line.qtyCtrl);
+        if (qty < 0) throw Exception("Vétérinaire : quantité négative interdite.");
+        if (qty == 0) continue;
 
-    bool didWrite = false;
+        final itemId = line.itemId;
+        if (itemId == null || itemId.isEmpty) {
+          throw Exception("Vétérinaire : veuillez sélectionner un produit.");
+        }
+        newUsed[itemId] = (newUsed[itemId] ?? 0) + qty;
+      }
+    }
 
+    final note = _noVetTreatment
+        ? null
+        : (_vetNoteCtrl.text.trim().isEmpty ? null : _vetNoteCtrl.text.trim());
+
+    // If none and nothing to restore, just write 'none' and exit
     await _db.runTransaction((tx) async {
-      final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        didWrite = false;
+      final entrySnap = await tx.get(entryRef);
+      final entry = entrySnap.data() ?? <String, dynamic>{};
+      final vet = (entry['vet'] is Map) ? (entry['vet'] as Map) : <String, dynamic>{};
+      final oldItems = (vet['items'] is List) ? (vet['items'] as List) : const <dynamic>[];
+
+      // Build old usage map
+      final Map<String, int> oldUsed = {};
+      for (final it in oldItems) {
+        if (it is Map) {
+          final id = (it['itemId'] ?? '').toString();
+          final q = _asInt(it['qtyUsed']);
+          if (id.isNotEmpty && q > 0) oldUsed[id] = (oldUsed[id] ?? 0) + q;
+        }
+      }
+
+      // union keys
+      final keys = <String>{...oldUsed.keys, ...newUsed.keys};
+
+      // if no change
+      bool anyDelta = false;
+      final Map<String, int> deltaByItem = {};
+      for (final k in keys) {
+        final d = (newUsed[k] ?? 0) - (oldUsed[k] ?? 0);
+        if (d != 0) anyDelta = true;
+        deltaByItem[k] = d;
+      }
+
+      if (!anyDelta && ((_noVetTreatment && (oldUsed.isEmpty)) || (!_noVetTreatment && oldUsed.isNotEmpty))) {
+        // Still ensure we update entry's note/none flag if needed
+        tx.set(
+          entryRef,
+          {
+            'vet': {
+              'none': _noVetTreatment,
+              'items': _noVetTreatment
+                  ? <dynamic>[]
+                  : newUsed.entries
+                  .map((e) => {'itemId': e.key, 'qtyUsed': e.value, 'unitLabel': 'unité'})
+                  .toList(),
+              'note': note,
+              'savedAt': FieldValue.serverTimestamp(),
+            },
+            'updatedAt': FieldValue.serverTimestamp(),
+            'source': 'mobile_app',
+          },
+          SetOptions(merge: true),
+        );
         return;
       }
 
-      didWrite = true;
+      // For each item, adjust stock by delta (delta>0 => consume more => subtract delta)
+      // Ensure not negative.
+      for (final entryItem in deltaByItem.entries) {
+        final itemId = entryItem.key;
+        final delta = entryItem.value;
+        if (delta == 0) continue;
 
-      tx.set(useRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'itemId': itemId,
-        'qty': qty,
-        'unit': _vetUnitLabel,
-        'note': note,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      });
+        final stockRef = farmRef.collection('stocks_items').doc(itemId);
+        final stockSnap = await tx.get(stockRef);
+        final stock = stockSnap.data() as Map<String, dynamic>?;
+        final currentQty =
+        (stock?['qtyOnHand'] is num) ? (stock!['qtyOnHand'] as num).toInt() : 0;
 
+        // stock change = -delta (because usage reduces stock)
+        final newQty = currentQty - delta;
+        if (newQty < 0) {
+          throw Exception("Stock véto insuffisant pour '$itemId' : $currentQty dispo, besoin +$delta.");
+        }
+
+        tx.set(
+          stockRef,
+          {'qtyOnHand': newQty, 'updatedAt': FieldValue.serverTimestamp()},
+          SetOptions(merge: true),
+        );
+
+        // deterministic movement: net qtyUsed for day (newUsed)
+        final movRef = farmRef
+            .collection('items_movements')
+            .doc('VET_${widget.building.id}_$dateIso\_$itemId');
+
+        tx.set(
+          movRef,
+          {
+            'date': dateIso,
+            'type': 'OUT',
+            'itemId': itemId,
+            'qty': newUsed[itemId] ?? 0,
+            'unitLabel': 'unité',
+            'from': {'kind': 'FARM'},
+            'to': {'kind': 'BUILDING', 'id': widget.building.id},
+            'reason': 'VET_TREATMENT',
+            'note': note,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'source': 'mobile_app',
+          },
+          SetOptions(merge: true),
+        );
+      }
+
+      // Save to daily entry (source of truth)
       tx.set(
         entryRef,
         {
           'vet': {
-            'itemId': itemId,
-            'qty': qty,
-            'unit': _vetUnitLabel,
+            'none': _noVetTreatment,
+            'items': _noVetTreatment
+                ? <dynamic>[]
+                : newUsed.entries
+                .map((e) => {'itemId': e.key, 'qtyUsed': e.value, 'unitLabel': 'unité'})
+                .toList(),
             'note': note,
             'savedAt': FieldValue.serverTimestamp(),
           },
@@ -800,82 +800,63 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         },
         SetOptions(merge: true),
       );
-
-      tx.set(lockRef, {
-        'kind': 'VET_USAGE',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
     });
 
-    if (!didWrite) return "Vétérinaire déjà enregistré";
-
-    _selectedVetItemId = null;
-    _vetQtyCtrl.text = "0";
+    // Reset quantities (keep selection)
+    for (final l in _vetLines) {
+      l.qtyCtrl.text = "0";
+    }
     _vetNoteCtrl.clear();
-    _vetStockOnHand = null;
-    _vetUnitLabel = "unité";
 
-    return "Vétérinaire OK (-$qty $_vetUnitLabel)";
+    if (_noVetTreatment) return "Véto: aucun (maj)";
+    final total = newUsed.values.fold<int>(0, (a, b) => a + b);
+    if (total == 0) return null;
+    return "Véto OK (maj, total $total)";
   }
 
   // =========================
-  // MORTALITÉ ✅ SANS MortalityService (direct Firestore)
+  // Mortality (safe)
+  // - if qty>0 => require active lotId and lot document exists
+  // - otherwise show a clear error instead of "lot introuvable"
   // =========================
-  Future<String?> _saveMortalityIfAny(String dateIso) async {
+  Future<String?> _saveMortalitySafe(String dateIso) async {
     final qty = _parseInt(_mortalityQtyCtrl);
     if (qty < 0) throw Exception("Mortalité : quantité négative interdite.");
-    if (qty == 0) return null;
 
-    final lotId = await ActiveLotService.getActiveLotIdForBuilding(widget.building.id);
-    final farmRef = _db.collection('farms').doc(_farmId);
+    final hasAnyField =
+        qty != 0 || _mortalityCauseCtrl.text.trim().isNotEmpty || _mortalityNoteCtrl.text.trim().isNotEmpty;
+    if (!hasAnyField) return null;
 
-    final cause = _mortalityCauseCtrl.text.trim().isEmpty ? null : _mortalityCauseCtrl.text.trim();
-    final note = _mortalityNoteCtrl.text.trim().isEmpty ? null : _mortalityNoteCtrl.text.trim();
+    // ✅ require lot if qty>0 (and even for a mortality report, it's safer)
+    final lotId = await _getActiveLotIdCompat();
+    if (lotId == null || lotId.trim().isEmpty) {
+      throw Exception("Mortalité : aucun lot actif pour ce bâtiment. Active d’abord un lot avant de saisir une mortalité.");
+    }
 
-    final uniqueKey = [
-      'MORTALITY',
-      _farmId,
-      dateIso,
-      widget.building.id,
-      qty.toString(),
-      (cause ?? ''),
-      (note ?? ''),
-    ].join('|');
+    // check lot existence
+    final lotSnap = await _farmRef()
+        .collection('lots')
+        .doc(lotId)
+        .get(const GetOptions(source: Source.serverAndCache));
+    if (!lotSnap.exists) {
+      throw Exception("Mortalité : lot actif introuvable (lotId=$lotId). Vérifie la création/activation du lot.");
+    }
 
-    final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-    final mortRef = farmRef.collection('mortalities').doc(); // ✅ collection simple
+    final farmRef = _farmRef();
     final entryRef = _dailyEntryRef(dateIso);
 
-    bool didWrite = false;
+    // deterministic mortality doc for the day/building
+    final mortalityRef = farmRef.collection('daily_mortality').doc('${widget.building.id}_$dateIso');
 
     await _db.runTransaction((tx) async {
-      final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        didWrite = false;
-        return;
-      }
-
-      didWrite = true;
-
-      tx.set(mortRef, {
-        'date': dateIso,
-        'buildingId': widget.building.id,
-        'lotId': lotId,
-        'qty': qty,
-        'cause': cause,
-        'note': note,
-        'createdAt': FieldValue.serverTimestamp(),
-        'source': 'mobile_app',
-      });
-
       tx.set(
         entryRef,
         {
           'mortality': {
             'qty': qty,
-            'cause': cause,
-            'note': note,
             'lotId': lotId,
+            'cause': _mortalityCauseCtrl.text.trim().isEmpty ? null : _mortalityCauseCtrl.text.trim(),
+            'note': _mortalityNoteCtrl.text.trim().isEmpty ? null : _mortalityNoteCtrl.text.trim(),
             'savedAt': FieldValue.serverTimestamp(),
           },
           'updatedAt': FieldValue.serverTimestamp(),
@@ -884,414 +865,379 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         SetOptions(merge: true),
       );
 
-      tx.set(lockRef, {
-        'kind': 'MORTALITY',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      tx.set(
+        mortalityRef,
+        {
+          'date': dateIso,
+          'buildingId': widget.building.id,
+          'lotId': lotId,
+          'qty': qty,
+          'cause': _mortalityCauseCtrl.text.trim().isEmpty ? null : _mortalityCauseCtrl.text.trim(),
+          'note': _mortalityNoteCtrl.text.trim().isEmpty ? null : _mortalityNoteCtrl.text.trim(),
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'source': 'mobile_app',
+        },
+        SetOptions(merge: true),
+      );
     });
-
-    if (!didWrite) return "Mortalité déjà enregistrée";
 
     _mortalityQtyCtrl.text = "0";
     _mortalityCauseCtrl.clear();
     _mortalityNoteCtrl.clear();
 
-    return "Mortalité OK (-$qty)";
+    return "Mortalité OK ($qty, lot=$lotId)";
   }
 
   // =========================
-  // UI Helpers
+  // UI
   // =========================
-  Widget _gradeRow(String label, String grade) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 4),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _alveolesCtrls[grade],
-                keyboardType: TextInputType.number,
-                inputFormatters: _digitsOnly,
-                decoration: const InputDecoration(
-                  labelText: 'Alvéoles',
-                  border: OutlineInputBorder(),
-                ),
+  @override
+  Widget build(BuildContext context) {
+    final dateIso = _dateIso(_date);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Rapport journalier - ${widget.building.name}'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.calendar_month),
+              title: Text("Date: $dateIso"),
+              subtitle: const Text("Choisir la date du rapport"),
+              onTap: _saving
+                  ? null
+                  : () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _date,
+                  firstDate: DateTime(2020, 1, 1),
+                  lastDate: DateTime.now().add(const Duration(days: 1)),
+                );
+                if (picked != null) setState(() => _date = picked);
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          _sectionTitle("Ponte (bons oeufs)"),
+          _gradeRow("SMALL", _smallTraysCtrl, _smallIsolatedCtrl),
+          _gradeRow("MEDIUM", _mediumTraysCtrl, _mediumIsolatedCtrl),
+          _gradeRow("LARGE", _largeTraysCtrl, _largeIsolatedCtrl),
+          _gradeRow("XL", _xlTraysCtrl, _xlIsolatedCtrl),
+
+          const SizedBox(height: 12),
+          _sectionTitle("Casses"),
+          _brokenRow(),
+
+          const SizedBox(height: 18),
+
+          _sectionTitle("Eau"),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  RadioListTile<String>(
+                    value: 'MANUAL',
+                    groupValue: _waterMode,
+                    title: const Text("Saisie manuelle"),
+                    onChanged: _saving ? null : (v) => setState(() => _waterMode = v!),
+                  ),
+                  RadioListTile<String>(
+                    value: 'ESTIMATE',
+                    groupValue: _waterMode,
+                    title: const Text("Estimation automatique"),
+                    onChanged: _saving
+                        ? null
+                        : (v) async {
+                      setState(() => _waterMode = v!);
+                      await _applyWaterEstimateIfNeeded();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _waterLitersCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: _waterMode == 'MANUAL' ? "Litres consommés" : "Litres estimés (modifiable)",
+                      helperText: _waterMode == 'ESTIMATE'
+                          ? "Basé sur lot actif/capacité bâtiment (0.25L/poule/jour)"
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _waterNoteCtrl,
+                    decoration: const InputDecoration(labelText: "Note (optionnel)"),
+                  ),
+                ],
               ),
             ),
+          ),
+
+          const SizedBox(height: 18),
+
+          _sectionTitle("Produits vétérinaires"),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    value: _noVetTreatment,
+                    onChanged: _saving ? null : (v) => setState(() => _noVetTreatment = v),
+                    title: const Text("Aucun traitement"),
+                    subtitle: const Text("Activez si aucun produit vétérinaire n’a été utilisé ce jour."),
+                  ),
+                  if (!_noVetTreatment) ...[
+                    if (_loadingVetItems)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: LinearProgressIndicator(),
+                      ),
+                    if (_vetItems.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          "Aucun produit disponible (farms/farm_nkoteng/items).",
+                          style: TextStyle(color: Colors.red),
+                        ),
+                      ),
+                    const SizedBox(height: 6),
+                    for (int i = 0; i < _vetLines.length; i++) _vetLineRow(i),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: _saving ? null : () => setState(() => _vetLines.add(_VetLine())),
+                        icon: const Icon(Icons.add),
+                        label: const Text("Ajouter produit"),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _vetNoteCtrl,
+                      enabled: !_saving,
+                      decoration: const InputDecoration(
+                        labelText: "Note (optionnel)",
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 18),
+
+          _sectionTitle("Mortalité"),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _mortalityQtyCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: "Nombre de morts"),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _mortalityCauseCtrl,
+                    decoration: const InputDecoration(labelText: "Cause (optionnel)"),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _mortalityNoteCtrl,
+                    decoration: const InputDecoration(labelText: "Note (optionnel)"),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 18),
+
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _saving ? null : _saveAll,
+              icon: _saving
+                  ? const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+                  : const Icon(Icons.save),
+              label: Text(_saving ? "Enregistrement..." : "Enregistrer"),
+            ),
+          ),
+          const SizedBox(height: 28),
+        ],
+      ),
+    );
+  }
+
+  Widget _vetLineRow(int index) {
+    final line = _vetLines[index];
+    final currentItem = _vetItems.where((e) => e.id == line.itemId).toList();
+    final selected = currentItem.isNotEmpty ? currentItem.first : null;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: line.itemId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: "Produit",
+                    border: OutlineInputBorder(),
+                  ),
+                  items: _vetItems
+                      .map((it) => DropdownMenuItem<String>(
+                    value: it.id,
+                    child: Text(it.name),
+                  ))
+                      .toList(),
+                  onChanged: _saving
+                      ? null
+                      : (v) {
+                    setState(() {
+                      line.itemId = v;
+                      final it = _vetItems.where((e) => e.id == v).toList();
+                      if (it.isNotEmpty) line.unitLabel = it.first.unitLabel;
+                    });
+                    if (v != null && v.isNotEmpty) {
+                      _loadVetStockForLine(line, v);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              SizedBox(
+                width: 120,
+                child: TextField(
+                  controller: line.qtyCtrl,
+                  enabled: !_saving,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: "Qté",
+                    helperText: line.unitLabel,
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: "Supprimer",
+                onPressed: _saving || _vetLines.length <= 1
+                    ? null
+                    : () {
+                  setState(() {
+                    final removed = _vetLines.removeAt(index);
+                    removed.dispose();
+                  });
+                },
+                icon: const Icon(Icons.delete_outline),
+              ),
+            ],
+          ),
+          if (line.stockOnHand != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                "Stock dispo: ${line.stockOnHand} ${line.unitLabel}",
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            )
+          else if (selected != null && line.itemId != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                "Stock dispo: (non chargé)",
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String t) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(t, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+    );
+  }
+
+  Widget _gradeRow(String label, TextEditingController trays, TextEditingController isolated) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            SizedBox(width: 72, child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700))),
             const SizedBox(width: 8),
             Expanded(
               child: TextField(
-                controller: _isolatedCtrls[grade],
+                controller: trays,
                 keyboardType: TextInputType.number,
-                inputFormatters: _isolatedFormatters,
                 decoration: const InputDecoration(
-                  labelText: 'Œufs isolés (0..29)',
-                  border: OutlineInputBorder(),
+                  labelText: "Alvéoles",
+                  helperText: "30 oeufs / alvéole",
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: isolated,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: "Isolés",
+                  helperText: "si saisi: 1..29",
                 ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
-      ],
+      ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final msg = _message;
-    final defaultFeedId = _defaultFeedItemIdFromBuilding();
-
-    final feedQuery = _db
-        .collection('farms')
-        .doc(_farmId)
-        .collection('items')
-        .where('type', isEqualTo: 'FEED')
-        .where('active', isEqualTo: true);
-
-    final vetQuery = _db
-        .collection('farms')
-        .doc(_farmId)
-        .collection('items')
-        .where('type', isEqualTo: 'VET')
-        .where('active', isEqualTo: true);
-
-    return Scaffold(
-      appBar: AppBar(title: Text("Saisie – ${widget.building.name}")),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ListView(
+  Widget _brokenRow() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    "Date : ${_dateIso(_selectedDate)}",
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: _loading ? null : _pickDate,
-                  icon: const Icon(Icons.date_range),
-                  label: const Text("Choisir"),
-                ),
-              ],
-            ),
-
-            const Divider(height: 32),
-
-            Text("Ponte journalière", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            _gradeRow("Petit calibre", 'SMALL'),
-            _gradeRow("Moyen calibre", 'MEDIUM'),
-            _gradeRow("Gros calibre", 'LARGE'),
-            _gradeRow("Très gros calibre", 'XL'),
-
-            const Divider(height: 32),
-
-            Text("Casses (constatées à la collecte)", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _brokenAlveolesCtrl,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: _digitsOnly,
-                    decoration: const InputDecoration(
-                      labelText: 'Alvéoles cassées',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _brokenIsolatedCtrl,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: _isolatedFormatters,
-                    decoration: const InputDecoration(
-                      labelText: 'Œufs isolés (0..29)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _brokenNoteCtrl,
-              decoration: const InputDecoration(
-                labelText: "Note casses (optionnel)",
-                border: OutlineInputBorder(),
-              ),
-            ),
-
-            const Divider(height: 32),
-
-            Text("Aliments", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: feedQuery.snapshots(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  return Text("Erreur aliments: ${snap.error}", style: const TextStyle(color: Colors.red));
-                }
-                if (!snap.hasData) return const LinearProgressIndicator();
-                final docs = snap.data!.docs;
-
-                if (_selectedFeedItemId == null && defaultFeedId != null) {
-                  final exists = docs.any((d) => d.id == defaultFeedId);
-                  if (exists) _selectedFeedItemId = defaultFeedId;
-                }
-
-                return DropdownButtonFormField<String>(
-                  value: _selectedFeedItemId,
-                  decoration: const InputDecoration(
-                    labelText: "Aliment",
-                    border: OutlineInputBorder(),
-                  ),
-                  items: docs.map((d) {
-                    final data = d.data();
-                    final label = (data['name'] ?? d.id).toString();
-                    return DropdownMenuItem<String>(value: d.id, child: Text(label));
-                  }).toList(),
-                  onChanged: _loading ? null : (v) => setState(() => _selectedFeedItemId = v),
-                );
-              },
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _feedBagsCtrl,
-              keyboardType: TextInputType.number,
-              inputFormatters: _digitsOnly,
-              decoration: const InputDecoration(
-                labelText: 'Sacs consommés (50 kg)',
-                border: OutlineInputBorder(),
-              ),
-            ),
-
-            const Divider(height: 32),
-
-            Text("Eau (litres)", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: RadioListTile<String>(
-                    value: 'MANUAL',
-                    groupValue: _waterMode,
-                    title: const Text("Saisie manuelle"),
-                    onChanged: _loading ? null : (v) => setState(() => _waterMode = v!),
-                  ),
-                ),
-                Expanded(
-                  child: RadioListTile<String>(
-                    value: 'ESTIMATE',
-                    groupValue: _waterMode,
-                    title: const Text("Estimation"),
-                    onChanged: _loading
-                        ? null
-                        : (v) async {
-                      setState(() => _waterMode = v!);
-                      try {
-                        final est = await _computeEstimatedWaterLiters();
-                        if (mounted) {
-                          setState(() {
-                            _waterEstimatedLiters = est;
-                            _waterLitersCtrl.text = est.toString();
-                          });
-                        }
-                      } catch (_) {
-                        if (mounted) {
-                          setState(() {
-                            _waterEstimatedLiters = 0;
-                            _waterLitersCtrl.text = "0";
-                          });
-                        }
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _waterLitersCtrl,
-              keyboardType: TextInputType.number,
-              inputFormatters: _digitsOnly,
-              enabled: !_loading,
-              decoration: InputDecoration(
-                labelText: _waterMode == 'MANUAL'
-                    ? "Litres consommés"
-                    : "Litres estimés (modifiable si besoin)",
-                border: const OutlineInputBorder(),
-                helperText: _waterMode == 'ESTIMATE'
-                    ? "Estimé = $_waterEstimatedLiters L (basé sur lot actif)"
-                    : null,
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _waterNoteCtrl,
-              decoration: const InputDecoration(
-                labelText: "Note eau (optionnel)",
-                border: OutlineInputBorder(),
-              ),
-            ),
-
-            const Divider(height: 32),
-
-            Text("Produits vétérinaires (utilisation)", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _noVetTreatment,
-              onChanged: _loading
-                  ? null
-                  : (v) {
-                setState(() {
-                  _noVetTreatment = v ?? false;
-                  if (_noVetTreatment) {
-                    _selectedVetItemId = null;
-                    _vetQtyCtrl.text = "0";
-                    _vetNoteCtrl.clear();
-                    _vetStockOnHand = null;
-                    _vetUnitLabel = "unité";
-                  }
-                });
-              },
-              title: const Text("Aucun traitement / produit utilisé aujourd'hui"),
-            ),
-
-            if (!_noVetTreatment) ...[
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: vetQuery.snapshots(),
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Text("Erreur véto: ${snap.error}", style: const TextStyle(color: Colors.red));
-                  }
-                  if (!snap.hasData) return const LinearProgressIndicator();
-
-                  final docs = snap.data!.docs;
-
-                  return DropdownButtonFormField<String>(
-                    value: _selectedVetItemId,
-                    decoration: const InputDecoration(
-                      labelText: "Produit vétérinaire",
-                      border: OutlineInputBorder(),
-                    ),
-                    items: docs.map((d) {
-                      final data = d.data();
-                      final label = (data['name'] ?? d.id).toString();
-                      return DropdownMenuItem<String>(value: d.id, child: Text(label));
-                    }).toList(),
-                    onChanged: _loading
-                        ? null
-                        : (v) async {
-                      setState(() {
-                        _selectedVetItemId = v;
-                        _vetStockOnHand = null;
-                        _vetUnitLabel = "unité";
-                      });
-
-                      if (v == null) return;
-                      try {
-                        final doc = await _db
-                            .collection('farms')
-                            .doc(_farmId)
-                            .collection('items')
-                            .doc(v)
-                            .get();
-
-                        final data = doc.data() ?? {};
-                        setState(() {
-                          _vetStockOnHand = _getInt(data['stockOnHand']);
-                          final u = (data['unit'] ?? data['unitLabel'] ?? '').toString().trim();
-                          if (u.isNotEmpty) _vetUnitLabel = u;
-                        });
-                      } catch (_) {}
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _vetQtyCtrl,
+            const SizedBox(width: 72, child: Text("Casse", style: TextStyle(fontWeight: FontWeight.w700))),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _brokenTraysCtrl,
                 keyboardType: TextInputType.number,
-                inputFormatters: _digitsOnly,
-                decoration: InputDecoration(
-                  labelText: "Quantité ($_vetUnitLabel)",
-                  border: const OutlineInputBorder(),
-                  helperText: _vetStockOnHand == null ? null : "Stock dispo: $_vetStockOnHand $_vetUnitLabel",
-                ),
+                decoration: const InputDecoration(labelText: "Alvéoles"),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _vetNoteCtrl,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: _brokenIsolatedCtrl,
+                keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
-                  labelText: "Note véto (optionnel)",
-                  border: OutlineInputBorder(),
+                  labelText: "Isolés",
+                  helperText: "si saisi: 1..29",
                 ),
-              ),
-            ],
-
-            const Divider(height: 32),
-
-            Text("Mortalité", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _mortalityQtyCtrl,
-              keyboardType: TextInputType.number,
-              inputFormatters: _digitsOnly,
-              decoration: const InputDecoration(
-                labelText: "Nombre de morts",
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _mortalityCauseCtrl,
-              decoration: const InputDecoration(
-                labelText: "Cause (optionnel)",
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _mortalityNoteCtrl,
-              decoration: const InputDecoration(
-                labelText: "Note mortalité (optionnel)",
-                border: OutlineInputBorder(),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            if (msg != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  msg,
-                  style: TextStyle(
-                    color: msg.startsWith("Erreur") ? Colors.red : Colors.green,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _loading ? null : _saveAll,
-                icon: _loading
-                    ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.save),
-                label: Text(_loading ? "Enregistrement..." : "Enregistrer"),
               ),
             ),
           ],
@@ -1301,29 +1247,25 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   }
 }
 
-/// ✅ Bloque la valeur dans une plage (ex: 0..29)
-class _MinMaxIntFormatter extends TextInputFormatter {
-  final int min;
-  final int max;
+class _VetItem {
+  final String id;
+  final String name;
+  final String unitLabel;
+  final bool isVet;
 
-  const _MinMaxIntFormatter({required this.min, required this.max});
+  const _VetItem({
+    required this.id,
+    required this.name,
+    required this.unitLabel,
+    required this.isVet,
+  });
+}
 
-  @override
-  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-    final text = newValue.text;
-    if (text.isEmpty) return newValue;
+class _VetLine {
+  String? itemId;
+  final TextEditingController qtyCtrl = TextEditingController(text: '0');
+  int? stockOnHand;
+  String unitLabel = 'unité';
 
-    final v = int.tryParse(text);
-    if (v == null) return oldValue;
-
-    int clamped = v;
-    if (v < min) clamped = min;
-    if (v > max) clamped = max;
-
-    final s = clamped.toString();
-    return TextEditingValue(
-      text: s,
-      selection: TextSelection.collapsed(offset: s.length),
-    );
-  }
+  void dispose() => qtyCtrl.dispose();
 }

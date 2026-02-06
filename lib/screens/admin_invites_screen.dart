@@ -18,16 +18,109 @@ class _AdminInvitesScreenState extends State<AdminInvitesScreen> {
   String _asStr(dynamic v) => (v ?? '').toString();
   bool _asBool(dynamic v) => v == true;
 
+  // collection choisie (farm ou root legacy)
+  CollectionReference<Map<String, dynamic>>? _invitesRef;
+  bool _checkingInvitesPath = true;
+  String? _invitesPathMsg;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      setState(() {
+        _checkingInvitesPath = false;
+        _invitesRef = null;
+        _invitesPathMsg = "Non connecté.";
+      });
+      return;
+    }
+
+    // 1) vérifier rôle ADMIN/active via farms/farm_nkoteng/users/{uid}
+    try {
+      final profileSnap =
+      await _db.collection('farms').doc(farmId).collection('users').doc(uid).get();
+      final p = profileSnap.data() ?? <String, dynamic>{};
+      final role = _asStr(p['role']).toUpperCase();
+      final active = _asBool(p['active']);
+
+      if (!active || role != 'ADMIN') {
+        setState(() {
+          _checkingInvitesPath = false;
+          _invitesRef = null;
+          _invitesPathMsg = "Accès refusé (ADMIN uniquement).";
+        });
+        return;
+      }
+    } catch (e) {
+      setState(() {
+        _checkingInvitesPath = false;
+        _invitesRef = null;
+        _invitesPathMsg = "Erreur profil: $e";
+      });
+      return;
+    }
+
+    // 2) essayer farms/farm_nkoteng/invites, sinon fallback root /invites (legacy)
+    final farmInvites = _db.collection('farms').doc(farmId).collection('invites');
+    try {
+      // test lecture (server) – si rules bloquent, on fallback.
+      await farmInvites.limit(1).get(const GetOptions(source: Source.server));
+      setState(() {
+        _invitesRef = farmInvites;
+        _checkingInvitesPath = false;
+        _invitesPathMsg = "Chemin: farms/$farmId/invites";
+      });
+      return;
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        // fallback root
+      } else {
+        // autre erreur => on tente quand même fallback root pour éviter écran vide.
+      }
+    } catch (_) {}
+
+    setState(() {
+      _invitesRef = _db.collection('invites');
+      _checkingInvitesPath = false;
+      _invitesPathMsg = "Chemin: /invites (legacy)";
+    });
+  }
+
   Future<void> _openCreate() async {
+    final ref = _invitesRef;
+    if (ref == null) return;
+
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const _InviteForm()),
+      MaterialPageRoute(builder: (_) => _InviteForm(invitesRef: ref)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final q = _db.collection('invites').orderBy('createdAt', descending: true);
+    if (_checkingInvitesPath) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Invitations")),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final ref = _invitesRef;
+    if (ref == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Invitations")),
+        body: Center(
+          child: Text(_invitesPathMsg ?? "Accès indisponible."),
+        ),
+      );
+    }
+
+    final q = ref.orderBy('createdAt', descending: true);
 
     return Scaffold(
       appBar: AppBar(
@@ -43,69 +136,35 @@ class _AdminInvitesScreenState extends State<AdminInvitesScreen> {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: q.snapshots(),
         builder: (context, snap) {
-          if (snap.hasError) return Center(child: Text("Erreur: ${snap.error}"));
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-
-          final docs = snap.data!.docs;
-          if (docs.isEmpty) {
-            return const Center(child: Text("Aucune invitation. Clique sur + pour en créer."));
+          if (snap.hasError) {
+            return Center(
+              child: Text(
+                "Erreur: ${snap.error}",
+                style: const TextStyle(color: Colors.red),
+              ),
+            );
+          }
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
           }
 
-          return ListView.separated(
+          final docs = snap.data!.docs;
+
+          return ListView(
             padding: const EdgeInsets.all(12),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
-            itemBuilder: (context, i) {
-              final d = docs[i];
-              final data = d.data();
-
-              final email = _asStr(data['email']);
-              final role = _asStr(data['role']);
-              final active = _asBool(data['active']);
-              final used = _asBool(data['used']);
-              final usedByUid = _asStr(data['usedByUid']);
-              final f = _asStr(data['farmId']);
-
-              final statusText = used ? "Utilisée" : "En attente";
-              final statusColor = used ? Colors.grey : Colors.green;
-
-              return Card(
-                child: ListTile(
-                  leading: Icon(used ? Icons.mark_email_read : Icons.mark_email_unread, color: statusColor),
-                  title: Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(
-                    "Rôle: $role • Farm: $f\n"
-                        "Actif: ${active ? "Oui" : "Non"} • Statut: $statusText"
-                        "${used && usedByUid.isNotEmpty ? "\nUtilisée par: $usedByUid" : ""}",
-                  ),
-                  isThreeLine: true,
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (v) async {
-                      if (v == 'delete') {
-                        final ok = await showDialog<bool>(
-                          context: context,
-                          builder: (_) => AlertDialog(
-                            title: const Text("Supprimer"),
-                            content: Text("Supprimer l’invitation de $email ?"),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Annuler")),
-                              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text("Supprimer")),
-                            ],
-                          ),
-                        );
-                        if (ok == true) await d.reference.delete();
-                      } else if (v == 'toggle') {
-                        await d.reference.set({'active': !active, 'updatedAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      PopupMenuItem(value: 'toggle', child: Text(active ? "Désactiver" : "Activer")),
-                      const PopupMenuItem(value: 'delete', child: Text("Supprimer")),
-                    ],
+            children: [
+              if (_invitesPathMsg != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    _invitesPathMsg!,
+                    style: TextStyle(color: Colors.grey.shade700),
                   ),
                 ),
-              );
-            },
+              if (docs.isEmpty)
+                const Center(child: Text("Aucune invitation.")),
+              for (final d in docs) _InviteTile(data: d.data(), id: d.id),
+            ],
           );
         },
       ),
@@ -113,15 +172,43 @@ class _AdminInvitesScreenState extends State<AdminInvitesScreen> {
   }
 }
 
+class _InviteTile extends StatelessWidget {
+  final Map<String, dynamic> data;
+  final String id;
+
+  const _InviteTile({required this.data, required this.id});
+
+  String _asStr(dynamic v) => (v ?? '').toString();
+  bool _asBool(dynamic v) => v == true;
+
+  @override
+  Widget build(BuildContext context) {
+    final email = _asStr(data['email']);
+    final role = _asStr(data['role']);
+    final active = _asBool(data['active']);
+    final used = _asBool(data['used']);
+    final displayName = _asStr(data['displayName']);
+
+    return Card(
+      child: ListTile(
+        title: Text(displayName.isEmpty ? email : "$displayName — $email"),
+        subtitle: Text("Rôle: $role • Actif: ${active ? "Oui" : "Non"} • Utilisée: ${used ? "Oui" : "Non"}"),
+        trailing: Text(id.substring(0, id.length > 6 ? 6 : id.length)),
+      ),
+    );
+  }
+}
+
 class _InviteForm extends StatefulWidget {
-  const _InviteForm();
+  final CollectionReference<Map<String, dynamic>> invitesRef;
+
+  const _InviteForm({required this.invitesRef});
 
   @override
   State<_InviteForm> createState() => _InviteFormState();
 }
 
 class _InviteFormState extends State<_InviteForm> {
-  final _db = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
 
   static const String farmId = 'farm_nkoteng';
@@ -160,8 +247,7 @@ class _InviteFormState extends State<_InviteForm> {
       final emailLower = email.toLowerCase();
 
       // Empêcher doublon invite active non utilisée pour le même email
-      final existing = await _db
-          .collection('invites')
+      final existing = await widget.invitesRef
           .where('emailLower', isEqualTo: emailLower)
           .where('used', isEqualTo: false)
           .limit(1)
@@ -171,7 +257,7 @@ class _InviteFormState extends State<_InviteForm> {
         throw Exception("Une invitation non utilisée existe déjà pour cet email.");
       }
 
-      await _db.collection('invites').add({
+      await widget.invitesRef.add({
         'email': email,
         'emailLower': emailLower,
         'displayName': displayName.isEmpty ? null : displayName,

@@ -1,55 +1,69 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class MortalityService {
+  static const String farmId = 'farm_nkoteng';
   static final _db = FirebaseFirestore.instance;
 
-  /// Ecrit un enregistrement dans daily_mortality.
-  /// Si lotId est non-null, on met aussi à jour le lot (mortalityTotal, currentQty).
+  static DocumentReference<Map<String, dynamic>> _farmRef() =>
+      _db.collection('farms').doc(farmId);
+
+  static DocumentReference<Map<String, dynamic>> _stockRef(String buildingId) =>
+      _farmRef().collection('stocks_subjects').doc('BUILDING_$buildingId');
+
+  static DocumentReference<Map<String, dynamic>> _lotRef(String lotId) =>
+      _farmRef().collection('subjects_lots').doc(lotId);
+
+  /// ✅ Ecrit un enregistrement dans daily_mortality + décrémente le lot actif et le stock sujets.
   static Future<void> addDailyMortality({
     required String buildingId,
-    required String dateIso, // ex "2026-03-16"
+    required String dateIso,
     required int qty,
     required String? cause,
     required String? note,
-    required String? lotId,
+    required String lotId, // ✅ obligatoire ici
+    String source = 'mobile_app',
   }) async {
-    final farmRef = _db.collection('farms').doc('farm_nkoteng');
+    if (qty <= 0) throw Exception("Mortalité: quantité invalide.");
+
+    final farmRef = _farmRef();
     final idempotencyKey = [
-      'MORTALITY_AUTOLOT',
-      'farm_nkoteng',
+      'MORTALITY',
+      farmId,
       dateIso,
       buildingId,
-      lotId ?? 'NOLOT',
+      lotId,
       qty.toString(),
     ].join('|');
 
     final lockRef = farmRef.collection('idempotency').doc(idempotencyKey);
     final mortalityRef = farmRef.collection('daily_mortality').doc();
-    final lotRef = lotId == null ? null : farmRef.collection('lots').doc(lotId);
+    final lotRef = _lotRef(lotId);
+    final stockRef = _stockRef(buildingId);
 
     await _db.runTransaction((tx) async {
-      // READS first
       final lockSnap = await tx.get(lockRef);
-      if (lockSnap.exists) {
-        // anti double clic
-        return;
+      if (lockSnap.exists) return;
+
+      final lotSnap = await tx.get(lotRef);
+      if (!lotSnap.exists) throw Exception('Lot introuvable (subjects_lots).');
+
+      final lot = lotSnap.data() ?? {};
+      final currentQty = (lot['currentQty'] is num) ? (lot['currentQty'] as num).toInt() : 0;
+      final mortalityTotal = (lot['mortalityTotal'] is num) ? (lot['mortalityTotal'] as num).toInt() : 0;
+
+      if (qty > currentQty) {
+        throw Exception('Mortalité > effectif du lot (stock insuffisant).');
       }
 
-      DocumentSnapshot<Map<String, dynamic>>? lotSnap;
-      Map<String, dynamic>? lotData;
-      if (lotRef != null) {
-        lotSnap = await tx.get(lotRef);
-        if (!lotSnap.exists) {
-          throw Exception('Lot introuvable.');
-        }
-        lotData = lotSnap.data();
-        final currentQty = (lotData?['currentQty'] ?? 0) as int;
-        if (qty > currentQty) {
-          throw Exception('Mortalité > effectif du lot (stock insuffisant).');
-        }
+      final stockSnap = await tx.get(stockRef);
+      final stockData = stockSnap.data() ?? {};
+      final stockOnHand = (stockData['totalOnHand'] is num) ? (stockData['totalOnHand'] as num).toInt() : 0;
+      if (qty > stockOnHand) {
+        throw Exception('Mortalité > stock sujets du bâtiment ($stockOnHand).');
       }
 
-      // WRITES
+      final now = FieldValue.serverTimestamp();
+
       tx.set(mortalityRef, {
         'date': dateIso,
         'buildingId': buildingId,
@@ -57,26 +71,26 @@ class MortalityService {
         'qty': qty,
         'cause': cause,
         'note': note,
-        'mode': lotId != null ? 'AUTO_LOT' : 'NO_LOT',
+        'mode': 'AUTO_LOT',
         'uniqueKey': idempotencyKey,
-        'createdAt': FieldValue.serverTimestamp(),
-        'createdBy': 'mobile_app',
+        'createdAt': now,
+        'source': source,
       }, SetOptions(merge: true));
 
-      if (lotRef != null && lotData != null) {
-        final currentQty = (lotData['currentQty'] ?? 0) as int;
-        final mortalityTotal = (lotData['mortalityTotal'] ?? 0) as int;
+      tx.set(lotRef, {
+        'currentQty': currentQty - qty,
+        'mortalityTotal': mortalityTotal + qty,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
 
-        tx.set(lotRef, {
-          'currentQty': currentQty - qty,
-          'mortalityTotal': mortalityTotal + qty,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
+      tx.set(stockRef, {
+        'totalOnHand': FieldValue.increment(-qty),
+        'updatedAt': now,
+      }, SetOptions(merge: true));
 
       tx.set(lockRef, {
-        'kind': 'DAILY_MORTALITY_AUTO_LOT',
-        'createdAt': FieldValue.serverTimestamp(),
+        'kind': 'DAILY_MORTALITY',
+        'createdAt': now,
         'uniqueKey': idempotencyKey,
       }, SetOptions(merge: true));
     });

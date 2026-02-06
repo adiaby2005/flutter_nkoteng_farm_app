@@ -27,15 +27,13 @@ class ProfileBootstrapScreen extends StatelessWidget {
         .doc(user.uid);
 
     debugPrint('AUTH uid=${user.uid} email=${user.email}');
-    debugPrint('PROFILE DOC PATH = ${docRef.path}');
+    debugPrint('PROFILE DOC PATH = ${docRef.path}'); // farms/farm_nkoteng/users/{uid}
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: docRef.snapshots(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
 
         if (snap.hasError) {
@@ -66,10 +64,7 @@ class ProfileBootstrapScreen extends StatelessWidget {
           );
         }
 
-        return UserProfileScope(
-          profile: profile,
-          child: const HomeScreen(),
-        );
+        return HomeScreen(profile: profile);
       },
     );
   }
@@ -79,11 +74,7 @@ class ContactAdminScreen extends StatelessWidget {
   final String email;
   final String reason;
 
-  const ContactAdminScreen({
-    super.key,
-    required this.email,
-    required this.reason,
-  });
+  const ContactAdminScreen({super.key, required this.email, required this.reason});
 
   @override
   Widget build(BuildContext context) {
@@ -122,11 +113,7 @@ class _ErrorScreen extends StatelessWidget {
   final String message;
   final String path;
 
-  const _ErrorScreen({
-    required this.title,
-    required this.message,
-    required this.path,
-  });
+  const _ErrorScreen({required this.title, required this.message, required this.path});
 
   @override
   Widget build(BuildContext context) {

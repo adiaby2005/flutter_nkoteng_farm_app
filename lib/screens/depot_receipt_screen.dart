@@ -18,81 +18,101 @@ class DepotReceiptScreen extends StatefulWidget {
 }
 
 class _DepotReceiptScreenState extends State<DepotReceiptScreen> {
-  final _db = FirebaseFirestore.instance;
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  bool _loading = false;
-  String? _message;
+  static const _grades = <String>['SMALL', 'MEDIUM', 'LARGE', 'XL'];
 
-  DateTime _selectedDate = DateTime.now();
+  // CTI constants: Carton=12 alvéoles, 1 alvéole=30 oeufs
+  static const int _eggsPerTray = 30;
+  static const int _traysPerCarton = 12;
+  static const int _eggsPerCarton = _eggsPerTray * _traysPerCarton; // 360
 
+  bool _saving = false;
+
+  // ✅ stable dropdown value
   String? _selectedTransferId;
   Map<String, dynamic>? _selectedTransferData;
 
-  // Saisie: bons par grade (cartons, alvéoles, isolés)
-  final Map<String, TextEditingController> _goodCartons = {
-    'SMALL': TextEditingController(text: "0"),
-    'MEDIUM': TextEditingController(text: "0"),
-    'LARGE': TextEditingController(text: "0"),
-    'XL': TextEditingController(text: "0"),
+  // ✅ controllers for GOOD received per grade (CTI)
+  final Map<String, TextEditingController> _goodCartonsCtrl = {
+    for (final g in _grades) g: TextEditingController(text: '0'),
   };
-  final Map<String, TextEditingController> _goodTrays = {
-    'SMALL': TextEditingController(text: "0"),
-    'MEDIUM': TextEditingController(text: "0"),
-    'LARGE': TextEditingController(text: "0"),
-    'XL': TextEditingController(text: "0"),
+  final Map<String, TextEditingController> _goodTraysCtrl = {
+    for (final g in _grades) g: TextEditingController(text: '0'),
   };
-  final Map<String, TextEditingController> _goodIsolated = {
-    'SMALL': TextEditingController(text: "0"),
-    'MEDIUM': TextEditingController(text: "0"),
-    'LARGE': TextEditingController(text: "0"),
-    'XL': TextEditingController(text: "0"),
+  final Map<String, TextEditingController> _goodIsolatedCtrl = {
+    for (final g in _grades) g: TextEditingController(text: '0'),
   };
 
-  // Casses total
-  final TextEditingController _brokenCartonsCtrl = TextEditingController(text: "0");
-  final TextEditingController _brokenTraysCtrl = TextEditingController(text: "0");
-  final TextEditingController _brokenIsolatedCtrl = TextEditingController(text: "0");
+  // ✅ controllers for BROKEN received (no grade) (CTI)
+  final TextEditingController _brokenCartonsCtrl = TextEditingController(text: '0');
+  final TextEditingController _brokenTraysCtrl = TextEditingController(text: '0');
+  final TextEditingController _brokenIsolatedCtrl = TextEditingController(text: '0');
 
-  final TextEditingController _noteCtrl = TextEditingController();
+  // ✅ controllers for LOSSES (no grade) (CTI)
+  final TextEditingController _lossCartonsCtrl = TextEditingController(text: '0');
+  final TextEditingController _lossTraysCtrl = TextEditingController(text: '0');
+  final TextEditingController _lossIsolatedCtrl = TextEditingController(text: '0');
 
   @override
   void dispose() {
-    for (final c in _goodCartons.values) c.dispose();
-    for (final c in _goodTrays.values) c.dispose();
-    for (final c in _goodIsolated.values) c.dispose();
+    for (final c in _goodCartonsCtrl.values) c.dispose();
+    for (final c in _goodTraysCtrl.values) c.dispose();
+    for (final c in _goodIsolatedCtrl.values) c.dispose();
+
     _brokenCartonsCtrl.dispose();
     _brokenTraysCtrl.dispose();
     _brokenIsolatedCtrl.dispose();
-    _noteCtrl.dispose();
+
+    _lossCartonsCtrl.dispose();
+    _lossTraysCtrl.dispose();
+    _lossIsolatedCtrl.dispose();
+
     super.dispose();
   }
 
-  String _dateIso(DateTime d) {
-    return "${d.year.toString().padLeft(4, '0')}-"
-        "${d.month.toString().padLeft(2, '0')}-"
-        "${d.day.toString().padLeft(2, '0')}";
-  }
+  CollectionReference<Map<String, dynamic>> get _movementsCol =>
+      _db.collection('farms').doc(widget.farmId).collection('egg_movements');
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(now.year - 3),
-      lastDate: DateTime(now.year + 1),
-    );
-    if (picked != null) setState(() => _selectedDate = picked);
-  }
+  DocumentReference<Map<String, dynamic>> get _farmRef =>
+      _db.collection('farms').doc(widget.farmId);
+
+  DocumentReference<Map<String, dynamic>> get _depotStockRef => _db
+      .collection('farms')
+      .doc(widget.farmId)
+      .collection('stocks_eggs')
+      .doc('DEPOT_${widget.depotId}');
 
   int _asInt(dynamic v) {
     if (v is int) return v;
     if (v is num) return v.toInt();
-    return 0;
+    return int.tryParse('${v ?? 0}') ?? 0;
   }
 
   Map<String, dynamic> _asMap(dynamic v) {
     if (v is Map) return Map<String, dynamic>.from(v);
     return <String, dynamic>{};
+  }
+
+  int _i(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+
+  int _ctiToEggs({
+    required int cartons,
+    required int trays,
+    required int isolated,
+  }) {
+    if (cartons < 0 || trays < 0 || isolated < 0) return -1;
+    // trays can exceed 11, we still accept and normalize via conversion
+    return (cartons * _eggsPerCarton) + (trays * _eggsPerTray) + isolated;
+  }
+
+  Map<String, int> _eggsToCti(int eggs) {
+    if (eggs < 0) eggs = 0;
+    final cartons = eggs ~/ _eggsPerCarton;
+    final rem = eggs % _eggsPerCarton;
+    final trays = rem ~/ _eggsPerTray;
+    final isolated = rem % _eggsPerTray;
+    return {'cartons': cartons, 'trays': trays, 'isolated': isolated};
   }
 
   String _gradeFr(String g) {
@@ -104,487 +124,489 @@ class _DepotReceiptScreenState extends State<DepotReceiptScreen> {
       case 'LARGE':
         return 'Gros';
       case 'XL':
-        return 'Très gros';
+        return 'XL';
       default:
         return g;
     }
   }
 
-  int _parse(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
-
-  int _eggsFromCTI({required int cartons, required int trays, required int isolated}) {
-    // 1 carton = 12 alvéoles ; 1 alvéole = 30 oeufs
-    return ((cartons * 12 + trays) * 30) + isolated;
-  }
-
-  void _ctiFromEggs(int eggs, TextEditingController cCartons, TextEditingController cTrays, TextEditingController cIso) {
-    if (eggs < 0) eggs = 0;
-    final trays = eggs ~/ 30;
-    final iso = eggs % 30;
-    final cartons = trays ~/ 12;
-    final traysR = trays % 12;
-    cCartons.text = cartons.toString();
-    cTrays.text = traysR.toString();
-    cIso.text = iso.toString();
-  }
-
-  int _goodEggsForGrade(String g) {
-    return _eggsFromCTI(
-      cartons: _parse(_goodCartons[g]!),
-      trays: _parse(_goodTrays[g]!),
-      isolated: _parse(_goodIsolated[g]!),
+  void _snack(String msg, {bool ok = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
     );
   }
 
-  int _brokenEggsTotal() {
-    return _eggsFromCTI(
-      cartons: _parse(_brokenCartonsCtrl),
-      trays: _parse(_brokenTraysCtrl),
-      isolated: _parse(_brokenIsolatedCtrl),
+  void _prefillFromTransfer(Map<String, dynamic> transfer) {
+    final sentGoodByGrade = _asMap(transfer['goodOutByGrade']);
+    for (final g in _grades) {
+      final eggs = _asInt(sentGoodByGrade[g]);
+      final cti = _eggsToCti(eggs);
+      _goodCartonsCtrl[g]!.text = '${cti['cartons']}';
+      _goodTraysCtrl[g]!.text = '${cti['trays']}';
+      _goodIsolatedCtrl[g]!.text = '${cti['isolated']}';
+    }
+
+    final sentBroken = _asInt(_asMap(transfer['brokenOut'])['totalBrokenEggs']);
+    final bCti = _eggsToCti(sentBroken);
+    _brokenCartonsCtrl.text = '${bCti['cartons']}';
+    _brokenTraysCtrl.text = '${bCti['trays']}';
+    _brokenIsolatedCtrl.text = '${bCti['isolated']}';
+
+    // losses default 0
+    _lossCartonsCtrl.text = '0';
+    _lossTraysCtrl.text = '0';
+    _lossIsolatedCtrl.text = '0';
+  }
+
+  int _receivedGoodEggsForGrade(String g) {
+    return _ctiToEggs(
+      cartons: _i(_goodCartonsCtrl[g]!),
+      trays: _i(_goodTraysCtrl[g]!),
+      isolated: _i(_goodIsolatedCtrl[g]!),
     );
   }
 
-  void _validateCTI({required String label, required int cartons, required int trays, required int isolated}) {
-    if (cartons < 0 || trays < 0 || isolated < 0) throw Exception("$label : valeurs négatives interdites.");
-    if (trays > 11) throw Exception("$label : alvéoles doit être entre 0 et 11 (par carton).");
-    if (isolated > 29) throw Exception("$label : œufs isolés doit être entre 0 et 29.");
+  int _receivedBrokenEggs() {
+    return _ctiToEggs(
+      cartons: _i(_brokenCartonsCtrl),
+      trays: _i(_brokenTraysCtrl),
+      isolated: _i(_brokenIsolatedCtrl),
+    );
   }
 
-  void _prefillFromTransfer(Map<String, dynamic> t) {
-    final goodByGrade = _asMap(t['goodOutByGrade']);
-    final brokenOut = _asMap(t['brokenOut']);
+  int _lossEggs() {
+    return _ctiToEggs(
+      cartons: _i(_lossCartonsCtrl),
+      trays: _i(_lossTraysCtrl),
+      isolated: _i(_lossIsolatedCtrl),
+    );
+  }
 
-    for (final g in ['SMALL', 'MEDIUM', 'LARGE', 'XL']) {
-      final eggs = _asInt(goodByGrade[g]);
-      _ctiFromEggs(eggs, _goodCartons[g]!, _goodTrays[g]!, _goodIsolated[g]!);
+  Map<String, dynamic> _computeSummary() {
+    final t = _selectedTransferData ?? <String, dynamic>{};
+
+    final sentGoodByGrade = _asMap(t['goodOutByGrade']);
+    final sentGoodTotal = _asInt(t['goodOutTotalEggs']);
+    final sentBrokenTotal = _asInt(_asMap(t['brokenOut'])['totalBrokenEggs']);
+    final sentTotal = sentGoodTotal + sentBrokenTotal;
+
+    // received
+    final receivedGoodByGrade = <String, int>{};
+    int receivedGoodTotal = 0;
+    bool invalid = false;
+
+    for (final g in _grades) {
+      final eggs = _receivedGoodEggsForGrade(g);
+      if (eggs < 0) invalid = true;
+      receivedGoodByGrade[g] = eggs < 0 ? 0 : eggs;
+      receivedGoodTotal += eggs < 0 ? 0 : eggs;
     }
 
-    final brokenTotal = _asInt(brokenOut['totalBrokenEggs']);
-    _ctiFromEggs(brokenTotal, _brokenCartonsCtrl, _brokenTraysCtrl, _brokenIsolatedCtrl);
+    final receivedBroken = _receivedBrokenEggs();
+    final loss = _lossEggs();
 
-    _noteCtrl.text = "";
+    if (receivedBroken < 0 || loss < 0) invalid = true;
+
+    final receivedTotal = receivedGoodTotal + (receivedBroken < 0 ? 0 : receivedBroken) + (loss < 0 ? 0 : loss);
+
+    final diff = sentTotal - receivedTotal; // must be 0 when strict
+
+    return {
+      'sentGoodByGrade': sentGoodByGrade,
+      'sentGoodTotal': sentGoodTotal,
+      'sentBrokenTotal': sentBrokenTotal,
+      'sentTotal': sentTotal,
+
+      'receivedGoodByGrade': receivedGoodByGrade,
+      'receivedGoodTotal': receivedGoodTotal,
+      'receivedBroken': receivedBroken < 0 ? 0 : receivedBroken,
+      'loss': loss < 0 ? 0 : loss,
+      'receivedTotal': receivedTotal,
+
+      'diff': diff,
+      'invalid': invalid,
+    };
   }
 
-  String _receiptLockId(String transferId) => ['DEPOT_RECEIPT', widget.farmId, widget.depotId, transferId].join('|');
+  Future<void> _confirmReceipt() async {
+    final transferId = _selectedTransferId;
+    final transfer = _selectedTransferData;
 
-  /// ✅ Option B sans getAll(): Future.wait(ref.get())
-  Future<Set<String>> _fetchReceivedTransferIds(List<QueryDocumentSnapshot<Map<String, dynamic>>> transfers) async {
-    if (transfers.isEmpty) return <String>{};
-
-    final farmRef = _db.collection('farms').doc(widget.farmId);
-
-    final futures = transfers.map((t) {
-      final lockId = _receiptLockId(t.id);
-      return farmRef.collection('idempotency').doc(lockId).get();
-    }).toList();
-
-    final snaps = await Future.wait(futures);
-
-    final received = <String>{};
-    for (int i = 0; i < snaps.length; i++) {
-      if (snaps[i].exists) {
-        received.add(transfers[i].id);
-      }
+    if (transferId == null || transferId.isEmpty || transfer == null) {
+      _snack("Sélectionnez un transfert.");
+      return;
     }
-    return received;
-  }
+    if (_saving) return;
 
-  Future<void> _saveReceipt() async {
-    setState(() {
-      _loading = true;
-      _message = null;
-    });
+    final summary = _computeSummary();
+    final invalid = summary['invalid'] == true;
+    final diff = (summary['diff'] as int?) ?? 0;
+
+    if (invalid) {
+      _snack("Valeurs invalides (négatives) interdites.");
+      return;
+    }
+
+    // ✅ strict equality
+    if (diff != 0) {
+      _snack("Incohérence : envoyés ≠ reçus + casses + pertes (diff=$diff). Corrigez les champs.");
+      return;
+    }
+
+    final receivedGoodByGrade = Map<String, int>.from(summary['receivedGoodByGrade'] as Map);
+    final receivedGoodTotal = summary['receivedGoodTotal'] as int;
+    final receivedBroken = summary['receivedBroken'] as int;
+    final loss = summary['loss'] as int;
+
+    setState(() => _saving = true);
 
     try {
-      final transferId = _selectedTransferId;
-      final transfer = _selectedTransferData;
-
-      if (transferId == null || transferId.isEmpty || transfer == null) {
-        throw Exception("Veuillez sélectionner un transfert à réceptionner.");
-      }
-
-      for (final g in ['SMALL', 'MEDIUM', 'LARGE', 'XL']) {
-        _validateCTI(
-          label: "Bons (${_gradeFr(g)})",
-          cartons: _parse(_goodCartons[g]!),
-          trays: _parse(_goodTrays[g]!),
-          isolated: _parse(_goodIsolated[g]!),
-        );
-      }
-      _validateCTI(
-        label: "Casses",
-        cartons: _parse(_brokenCartonsCtrl),
-        trays: _parse(_brokenTraysCtrl),
-        isolated: _parse(_brokenIsolatedCtrl),
-      );
-
-      final dateIso = _dateIso(_selectedDate);
-
-      final receivedGood = <String, int>{
-        'SMALL': _goodEggsForGrade('SMALL'),
-        'MEDIUM': _goodEggsForGrade('MEDIUM'),
-        'LARGE': _goodEggsForGrade('LARGE'),
-        'XL': _goodEggsForGrade('XL'),
-      };
-      final receivedGoodTotal = receivedGood.values.fold<int>(0, (a, b) => a + b);
-      final receivedBrokenTotal = _brokenEggsTotal();
-
-      final farmRef = _db.collection('farms').doc(widget.farmId);
-      final stockRef = farmRef.collection('stocks_eggs').doc("DEPOT_${widget.depotId}");
-      final receiptRef = farmRef.collection('egg_movements').doc();
-
-      final uniqueKey = _receiptLockId(transferId);
-      final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
-
-      final from = _asMap(transfer['from']);
-      final to = _asMap(transfer['to']);
-      final transferDate = (transfer['date'] ?? '').toString();
+      final movementRef = _movementsCol.doc(transferId);
+      final lockRef = _farmRef.collection('idempotency').doc('DEPOT_RECEIPT_STRICT_$transferId');
 
       await _db.runTransaction((tx) async {
+        // ✅ READS FIRST
         final lockSnap = await tx.get(lockRef);
         if (lockSnap.exists) return;
 
-        final stockSnap = await tx.get(stockRef);
-        final stockData = stockSnap.data() ?? <String, dynamic>{};
+        final movementSnap = await tx.get(movementRef);
+        if (!movementSnap.exists) throw Exception("Transfert introuvable.");
 
-        Map<String, int> pickGoodByGrade(Map<String, dynamic> data) {
-          Map<String, int> readGrades(String key) {
-            final raw = data[key];
-            final m = (raw is Map) ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
-            int gi(String k) => _asInt(m[k]);
-            return {'SMALL': gi('SMALL'), 'MEDIUM': gi('MEDIUM'), 'LARGE': gi('LARGE'), 'XL': gi('XL')};
-          }
-
-          final good = readGrades('goodByGrade');
-          final eggs = readGrades('eggsByGrade');
-
-          int pick(String g) {
-            final v = good[g] ?? 0;
-            if (v != 0) return v;
-            return eggs[g] ?? 0;
-          }
-
-          return {'SMALL': pick('SMALL'), 'MEDIUM': pick('MEDIUM'), 'LARGE': pick('LARGE'), 'XL': pick('XL')};
+        final m = movementSnap.data() ?? <String, dynamic>{};
+        if ((m['status'] ?? '').toString() == 'RECEIVED') {
+          throw Exception("Ce transfert est déjà reçu.");
         }
 
-        final currentGood = pickGoodByGrade(stockData);
-        final currentBroken = _asInt(stockData['brokenTotalEggs']);
+        final to = _asMap(m['to']);
+        final toDepotId = (to['depotId'] ?? '').toString();
+        if (toDepotId != widget.depotId) {
+          throw Exception("Ce transfert ne correspond pas à ce dépôt.");
+        }
 
-        final newGood = <String, int>{
-          'SMALL': (currentGood['SMALL'] ?? 0) + receivedGood['SMALL']!,
-          'MEDIUM': (currentGood['MEDIUM'] ?? 0) + receivedGood['MEDIUM']!,
-          'LARGE': (currentGood['LARGE'] ?? 0) + receivedGood['LARGE']!,
-          'XL': (currentGood['XL'] ?? 0) + receivedGood['XL']!,
+        final now = FieldValue.serverTimestamp();
+
+        // ✅ DEPOT stock: only received eggs are credited (good by grade + broken total)
+        final depotUpdates = <String, dynamic>{
+          'updatedAt': now,
+          'source': 'depot_receipt',
+          'goodTotalEggs': FieldValue.increment(receivedGoodTotal),
+          'brokenTotalEggs': FieldValue.increment(receivedBroken),
         };
-        final newBroken = currentBroken + receivedBrokenTotal;
 
-        tx.set(receiptRef, {
-          'date': dateIso,
-          'type': 'DEPOT_RECEIPT',
-          'depot': {'id': widget.depotId, 'name': widget.depotName},
-          'refTransferId': transferId,
-          'refTransferDate': transferDate,
-          'from': from,
-          'to': to,
-          'receivedGoodInByGrade': receivedGood,
-          'receivedGoodInTotal': receivedGoodTotal,
-          'receivedBrokenIn': {'totalBrokenEggs': receivedBrokenTotal},
-          'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
-          'createdAt': FieldValue.serverTimestamp(),
-          'source': 'mobile_app',
+        for (final g in _grades) {
+          depotUpdates['eggsByGrade.$g'] = FieldValue.increment(receivedGoodByGrade[g] ?? 0);
+        }
+
+        tx.set(_depotStockRef, depotUpdates, SetOptions(merge: true));
+
+        // ✅ movement status + payload receipt
+        tx.update(movementRef, {
+          'status': 'RECEIVED',
+          'receivedAt': now,
+          'receivedDepotId': widget.depotId,
+
+          // received payload
+          'receivedGoodByGrade': receivedGoodByGrade,
+          'receivedGoodTotalEggs': receivedGoodTotal,
+          'receivedBrokenTotalEggs': receivedBroken,
+
+          // losses payload
+          'lossTotalEggs': loss,
+
+          'updatedAt': now,
         });
-
-        tx.set(stockRef, {
-          'kind': 'DEPOT',
-          'locationType': 'DEPOT',
-          'locationId': widget.depotId,
-          'refId': widget.depotId,
-          'goodByGrade': newGood,
-          'eggsByGrade': newGood,
-          'goodTotalEggs': newGood.values.fold<int>(0, (a, b) => a + b),
-          'brokenTotalEggs': newBroken,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
 
         tx.set(lockRef, {
-          'kind': 'DEPOT_RECEIPT',
-          'createdAt': FieldValue.serverTimestamp(),
+          'kind': 'DEPOT_RECEIPT_STRICT',
+          'createdAt': now,
         });
-
-        // ❌ NE PAS updater le doc transfert (update interdit dans rules)
       });
+
+      _snack("Réception confirmée ✅", ok: true);
 
       setState(() {
-        _message = "Réception enregistrée ✅";
         _selectedTransferId = null;
         _selectedTransferData = null;
-      });
 
-      for (final g in ['SMALL', 'MEDIUM', 'LARGE', 'XL']) {
-        _goodCartons[g]!.text = "0";
-        _goodTrays[g]!.text = "0";
-        _goodIsolated[g]!.text = "0";
-      }
-      _brokenCartonsCtrl.text = "0";
-      _brokenTraysCtrl.text = "0";
-      _brokenIsolatedCtrl.text = "0";
-      _noteCtrl.clear();
+        for (final g in _grades) {
+          _goodCartonsCtrl[g]!.text = '0';
+          _goodTraysCtrl[g]!.text = '0';
+          _goodIsolatedCtrl[g]!.text = '0';
+        }
+        _brokenCartonsCtrl.text = '0';
+        _brokenTraysCtrl.text = '0';
+        _brokenIsolatedCtrl.text = '0';
+
+        _lossCartonsCtrl.text = '0';
+        _lossTraysCtrl.text = '0';
+        _lossIsolatedCtrl.text = '0';
+      });
     } catch (e) {
-      setState(() => _message = "Erreur : ${e.toString()}");
+      _snack(e.toString());
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   Widget _ctiRow({
-    required String title,
-    required TextEditingController cCartons,
-    required TextEditingController cTrays,
-    required TextEditingController cIso,
+    required String label,
+    required TextEditingController cartonsCtrl,
+    required TextEditingController traysCtrl,
+    required TextEditingController isolatedCtrl,
+    String? helper,
+    void Function()? onChanged,
   }) {
+    Widget field(String hint, TextEditingController ctrl) {
+      return SizedBox(
+        width: 96,
+        child: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: hint,
+            border: const OutlineInputBorder(),
+            isDense: true,
+          ),
+          onChanged: (_) => onChanged?.call(),
+        ),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 6),
-        Row(
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+        if (helper != null) ...[
+          const SizedBox(height: 4),
+          Text(helper, style: const TextStyle(color: Colors.black54)),
+        ],
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
           children: [
-            Expanded(
-              child: TextField(
-                controller: cCartons,
-                keyboardType: TextInputType.number,
-                enabled: !_loading,
-                decoration: const InputDecoration(labelText: "Cartons", border: OutlineInputBorder()),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: cTrays,
-                keyboardType: TextInputType.number,
-                enabled: !_loading,
-                decoration: const InputDecoration(labelText: "Alvéoles (0..11)", border: OutlineInputBorder()),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: cIso,
-                keyboardType: TextInputType.number,
-                enabled: !_loading,
-                decoration: const InputDecoration(labelText: "Isolés (0..29)", border: OutlineInputBorder()),
-              ),
-            ),
+            field('Cartons', cartonsCtrl),
+            field('Alvéoles', traysCtrl),
+            field('Isolés', isolatedCtrl),
           ],
         ),
       ],
     );
   }
 
+  Widget _gradeCard({
+    required String grade,
+    required int sentEggs,
+  }) {
+    final sentCti = _eggsToCti(sentEggs);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_gradeFr(grade), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Text(
+              "Envoyé : ${sentCti['cartons']} c / ${sentCti['trays']} a / ${sentCti['isolated']} i  (≈ $sentEggs œufs)",
+              style: const TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 10),
+            _ctiRow(
+              label: "Reçu (modifiable)",
+              cartonsCtrl: _goodCartonsCtrl[grade]!,
+              traysCtrl: _goodTraysCtrl[grade]!,
+              isolatedCtrl: _goodIsolatedCtrl[grade]!,
+              onChanged: () => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final msg = _message;
-    final farmRef = _db.collection('farms').doc(widget.farmId);
+    final query = _movementsCol
+        .where('type', isEqualTo: 'TRANSFER_FARM_TO_DEPOT')
+        .where('to.depotId', isEqualTo: widget.depotId)
+        .where('status', isEqualTo: 'SENT')
+        .orderBy('createdAt', descending: true);
 
-    final now = DateTime.now();
-    final fromDate = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 60));
-    final fromIso = _dateIso(fromDate);
+    final summary = _computeSummary();
+    final sentGoodByGrade = _asMap(summary['sentGoodByGrade']);
+    final sentGoodTotal = summary['sentGoodTotal'] as int? ?? 0;
+    final sentBrokenTotal = summary['sentBrokenTotal'] as int? ?? 0;
+    final sentTotal = summary['sentTotal'] as int? ?? 0;
 
-    final transfersQuery = farmRef
-        .collection('egg_movements')
-        .where('type', isEqualTo: 'TRANSFER')
-        .where('to.kind', isEqualTo: 'DEPOT')
-        .where('to.id', isEqualTo: widget.depotId)
-        .where('date', isGreaterThanOrEqualTo: fromIso)
-        .orderBy('date', descending: true)
-        .orderBy('createdAt', descending: true)
-        .limit(100);
+    final receivedGoodTotal = summary['receivedGoodTotal'] as int? ?? 0;
+    final receivedBroken = summary['receivedBroken'] as int? ?? 0;
+    final loss = summary['loss'] as int? ?? 0;
+    final receivedTotal = summary['receivedTotal'] as int? ?? 0;
+
+    final diff = summary['diff'] as int? ?? 0;
+    final invalid = summary['invalid'] == true;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text("Réception – ${widget.depotName}"),
-        actions: [
-          TextButton.icon(
-            onPressed: _loading ? null : _pickDate,
-            icon: const Icon(Icons.date_range),
-            label: Text(_dateIso(_selectedDate)),
-          ),
-        ],
+        title: Text("Réception dépôt - ${widget.depotName}"),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ListView(
-          children: [
-            Text("Sélectionner un transfert à réceptionner", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: query.snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) return Center(child: Text("Erreur: ${snap.error}"));
+          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
 
-            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: transfersQuery.snapshots(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  return Text("Erreur transferts: ${snap.error}", style: const TextStyle(color: Colors.red));
-                }
-                if (!snap.hasData) return const LinearProgressIndicator();
+          final docs = snap.data!.docs;
 
-                final allTransfers = snap.data!.docs;
+          // if selection becomes invalid, reset
+          if (_selectedTransferId != null && docs.every((d) => d.id != _selectedTransferId)) {
+            _selectedTransferId = null;
+            _selectedTransferData = null;
+          }
 
-                if (allTransfers.isEmpty) {
-                  return const Card(
-                    child: ListTile(
-                      leading: Icon(Icons.info_outline),
-                      title: Text("Aucun transfert"),
-                      subtitle: Text("Aucun transfert récent détecté pour ce dépôt."),
-                    ),
-                  );
-                }
+          return ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              if (docs.isEmpty)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text("Aucun transfert en attente."),
+                  ),
+                )
+              else
+                DropdownButtonFormField<String>(
+                  value: _selectedTransferId,
+                  items: docs.map((doc) {
+                    final d = doc.data();
+                    final date = (d['date'] ?? '').toString();
+                    final total = _asInt(d['goodOutTotalEggs']) + _asInt(_asMap(d['brokenOut'])['totalBrokenEggs']);
+                    return DropdownMenuItem<String>(
+                      value: doc.id,
+                      child: Text("$date — $total œufs"),
+                    );
+                  }).toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final doc = docs.firstWhere((d) => d.id == id);
+                    setState(() {
+                      _selectedTransferId = id;
+                      _selectedTransferData = doc.data();
+                      _prefillFromTransfer(_selectedTransferData!);
+                    });
+                  },
+                  decoration: const InputDecoration(
+                    labelText: "Transfert à recevoir",
+                    border: OutlineInputBorder(),
+                  ),
+                ),
 
-                return FutureBuilder<Set<String>>(
-                  future: _fetchReceivedTransferIds(allTransfers),
-                  builder: (context, receivedSnap) {
-                    if (receivedSnap.connectionState == ConnectionState.waiting) {
-                      return const Card(
-                        child: Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Row(
-                            children: [
-                              SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-                              SizedBox(width: 10),
-                              Expanded(child: Text("Chargement des transferts non réceptionnés...")),
-                            ],
+              const SizedBox(height: 12),
+
+              if (_selectedTransferData != null) ...[
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text("Résumé", style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 10),
+                        Text("Envoyé : bons=$sentGoodTotal, cassés=$sentBrokenTotal, total=$sentTotal"),
+                        const SizedBox(height: 6),
+                        Text("Reçu : bons=$receivedGoodTotal, cassés=$receivedBroken, pertes=$loss, total=$receivedTotal"),
+                        const SizedBox(height: 10),
+                        Text(
+                          "Diff (envoyé - reçu) : $diff",
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: (invalid || diff != 0) ? Colors.red : Colors.green,
                           ),
                         ),
-                      );
-                    }
+                        if (invalid) ...[
+                          const SizedBox(height: 8),
+                          const Text("⚠️ Valeurs négatives interdites.", style: TextStyle(color: Colors.red)),
+                        ],
+                        if (!invalid && diff != 0) ...[
+                          const SizedBox(height: 8),
+                          const Text(
+                            "⚠️ Corrigez les champs pour que : bons reçus + cassés reçus + pertes = total envoyé.",
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
 
-                    final receivedIds = receivedSnap.data ?? <String>{};
-                    final pendingTransfers = allTransfers.where((t) => !receivedIds.contains(t.id)).toList();
+                const SizedBox(height: 12),
 
-                    if (pendingTransfers.isEmpty) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (!mounted) return;
-                        if (_selectedTransferId != null) {
-                          setState(() {
-                            _selectedTransferId = null;
-                            _selectedTransferData = null;
-                          });
-                        }
-                      });
+                // ✅ per grade CTI cards
+                for (final g in _grades)
+                  _gradeCard(
+                    grade: g,
+                    sentEggs: _asInt(sentGoodByGrade[g]),
+                  ),
 
-                      return const Card(
-                        child: ListTile(
-                          leading: Icon(Icons.check_circle_outline),
-                          title: Text("Tout est déjà réceptionné"),
-                          subtitle: Text("Aucun transfert en attente de réception pour ce dépôt."),
-                        ),
-                      );
-                    }
+                const SizedBox(height: 12),
 
-                    if (_selectedTransferId != null && !pendingTransfers.any((t) => t.id == _selectedTransferId)) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (!mounted) return;
-                        setState(() {
-                          _selectedTransferId = null;
-                          _selectedTransferData = null;
-                        });
-                      });
-                    }
+                // ✅ broken received (no grade) CTI
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _ctiRow(
+                      label: "Casses reçues (sans calibre)",
+                      helper: "Pré-rempli avec les casses envoyées. Modifiable si besoin.",
+                      cartonsCtrl: _brokenCartonsCtrl,
+                      traysCtrl: _brokenTraysCtrl,
+                      isolatedCtrl: _brokenIsolatedCtrl,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ),
+                ),
 
-                    String fmtCTI(int eggs) {
-                      final trays = eggs ~/ 30;
-                      final cartons = trays ~/ 12;
-                      final traysR = trays % 12;
-                      final iso = eggs % 30;
-                      return "$cartons c • $traysR a • $iso i";
-                    }
+                const SizedBox(height: 12),
 
-                    return DropdownButtonFormField<String>(
-                      value: _selectedTransferId,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: "Transfert (non réceptionné)",
-                        border: OutlineInputBorder(),
-                      ),
-                      items: pendingTransfers.map((d) {
-                        final data = d.data();
-                        final date = (data['date'] ?? '').toString();
-                        final from = _asMap(data['from']);
-                        final fromName = (from['name'] ?? from['id'] ?? 'FARM').toString();
+                // ✅ losses (no grade) CTI
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _ctiRow(
+                      label: "Pertes (sans calibre)",
+                      helper: "Œufs manquants (ni bons, ni cassés).",
+                      cartonsCtrl: _lossCartonsCtrl,
+                      traysCtrl: _lossTraysCtrl,
+                      isolatedCtrl: _lossIsolatedCtrl,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ),
+                ),
 
-                        final goodOutTotal = _asInt(data['goodOutTotal']);
-                        final brokenOut = _asMap(data['brokenOut']);
-                        final brokenTotal = _asInt(brokenOut['totalBrokenEggs']);
+                const SizedBox(height: 12),
 
-                        final label =
-                            "$date — depuis $fromName — Bons: ${fmtCTI(goodOutTotal)} — Casses: ${fmtCTI(brokenTotal)}";
+                ElevatedButton.icon(
+                  onPressed: (_saving || invalid || diff != 0) ? null : _confirmReceipt,
+                  icon: _saving
+                      ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                      : const Icon(Icons.check),
+                  label: Text(_saving ? "Traitement..." : "Confirmer réception"),
+                ),
+              ],
 
-                        return DropdownMenuItem<String>(
-                          value: d.id,
-                          child: Text(label, overflow: TextOverflow.ellipsis),
-                        );
-                      }).toList(),
-                      onChanged: _loading
-                          ? null
-                          : (v) {
-                        if (v == null) return;
-                        final doc = pendingTransfers.firstWhere((d) => d.id == v);
-                        final data = doc.data();
-                        setState(() {
-                          _selectedTransferId = v;
-                          _selectedTransferData = data;
-                        });
-                        _prefillFromTransfer(data);
-                      },
-                    );
-                  },
-                );
-              },
-            ),
-
-            const Divider(height: 28),
-
-            Text("Quantités reçues (bons œufs)", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 10),
-
-            _ctiRow(title: "Petit calibre", cCartons: _goodCartons['SMALL']!, cTrays: _goodTrays['SMALL']!, cIso: _goodIsolated['SMALL']!),
-            const SizedBox(height: 12),
-            _ctiRow(title: "Moyen calibre", cCartons: _goodCartons['MEDIUM']!, cTrays: _goodTrays['MEDIUM']!, cIso: _goodIsolated['MEDIUM']!),
-            const SizedBox(height: 12),
-            _ctiRow(title: "Gros calibre", cCartons: _goodCartons['LARGE']!, cTrays: _goodTrays['LARGE']!, cIso: _goodIsolated['LARGE']!),
-            const SizedBox(height: 12),
-            _ctiRow(title: "Très gros calibre", cCartons: _goodCartons['XL']!, cTrays: _goodTrays['XL']!, cIso: _goodIsolated['XL']!),
-
-            const Divider(height: 28),
-
-            Text("Casses reçues", style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 10),
-
-            _ctiRow(title: "Casses (total)", cCartons: _brokenCartonsCtrl, cTrays: _brokenTraysCtrl, cIso: _brokenIsolatedCtrl),
-
-            const Divider(height: 28),
-
-            TextField(
-              controller: _noteCtrl,
-              enabled: !_loading,
-              decoration: const InputDecoration(labelText: "Note (optionnel)", border: OutlineInputBorder()),
-            ),
-
-            const SizedBox(height: 16),
-
-            FilledButton.icon(
-              onPressed: _loading ? null : _saveReceipt,
-              icon: const Icon(Icons.save),
-              label: Text(_loading ? "Enregistrement..." : "Enregistrer la réception"),
-            ),
-
-            const SizedBox(height: 12),
-
-            if (msg != null)
-              Text(
-                msg,
-                style: TextStyle(color: msg.startsWith("Erreur") ? Colors.red : Colors.green),
-              ),
-          ],
-        ),
+              const SizedBox(height: 24),
+            ],
+          );
+        },
       ),
     );
   }

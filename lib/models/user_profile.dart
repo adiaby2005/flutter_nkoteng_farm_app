@@ -1,5 +1,3 @@
-import 'package:flutter/material.dart';
-
 class UserProfile {
   final String uid;
   final String farmId;
@@ -40,27 +38,4 @@ class UserProfile {
   bool get isFarmer => role == 'FERMIER';
   bool get isVet => role == 'VETERINAIRE';
   bool get isDepot => role == 'DEPOT';
-}
-
-class UserProfileScope extends InheritedWidget {
-  final UserProfile profile;
-
-  const UserProfileScope({
-    super.key,
-    required this.profile,
-    required super.child,
-  });
-
-  static UserProfile of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<UserProfileScope>();
-    if (scope == null) {
-      throw StateError(
-        'UserProfileScope introuvable. Assure-toi que HomeScreen est sous ProfileBootstrapScreen.',
-      );
-    }
-    return scope.profile;
-  }
-
-  @override
-  bool updateShouldNotify(UserProfileScope oldWidget) => oldWidget.profile != profile;
 }

@@ -2,91 +2,100 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/user_profile.dart';
-
-import 'admin_invites_screen.dart';
 import 'admin_users_screen.dart';
+import 'admin_invites_screen.dart';
 import 'buildings_screen.dart';
 import 'clients_screen.dart';
 import 'depots_screen.dart';
-import 'egg_transfer_farm_to_depot_screen.dart';
-import 'egg_transfers_history_screen.dart';
 import 'farm_stock_screen.dart';
+import 'egg_transfer_farm_to_depot_screen.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  final UserProfile profile;
+  const HomeScreen({super.key, required this.profile});
 
-  void _go(BuildContext context, Widget screen) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+  void _go(BuildContext context, Widget page) {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
+  Color _roleColor(String role) {
+    switch (role) {
+      case 'ADMIN':
+        return Colors.red;
+      case 'VETERINAIRE':
+        return Colors.teal;
+      case 'DEPOT':
+        return Colors.indigo;
+      case 'FERMIER':
+      default:
+        return Colors.green;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final profile = UserProfileScope.of(context);
+    final farmId = profile.farmId; // farm_nkoteng
 
     final items = <_MenuItem>[
-      // ======== FERME (FERMIER/VET/ADMIN) ========
-      if (profile.isFarmer || profile.isVet || profile.isAdmin)
+      // ✅ Bâtiments (FERMIER/VETO/ADMIN)
+      if (profile.isAdmin || profile.isFarmer || profile.isVet)
         _MenuItem(
-          title: 'Bâtiments & Rapports',
-          subtitle: 'Bâtiments, saisie journalière, historique',
+          title: 'Bâtiments',
+          subtitle: 'Lots actifs, rapports journaliers, transferts',
           icon: Icons.home_work,
           onTap: () => _go(context, const BuildingsScreen()),
         ),
 
-      if (profile.isFarmer || profile.isVet || profile.isAdmin)
-        _MenuItem(
-          title: 'Stock ferme (œufs)',
-          subtitle: 'Stock global ferme (FARM_GLOBAL)',
-          icon: Icons.egg_alt,
-          onTap: () => _go(context, FarmStockScreen(farmId: profile.farmId)),
-        ),
-
-      if (profile.isFarmer || profile.isVet || profile.isAdmin)
-        _MenuItem(
-          title: 'Transfert ferme → dépôt',
-          subtitle: 'Transfert par carton (stock en œufs)',
-          icon: Icons.swap_horiz,
-          onTap: () => _go(context, EggTransferFarmToDepotScreen(farmId: profile.farmId)),
-        ),
-
-      if (profile.isFarmer || profile.isVet || profile.isAdmin)
-        _MenuItem(
-          title: 'Historique transferts œufs',
-          subtitle: 'Transferts ferme → dépôt',
-          icon: Icons.list_alt,
-          onTap: () => _go(context, EggTransfersHistoryScreen(farmId: profile.farmId)),
-        ),
-
-      // ======== DEPOT (DEPOT/ADMIN) ========
-      if (profile.isDepot || profile.isAdmin)
+      // ✅ Dépôts (DEPOT/ADMIN)
+      if (profile.isAdmin || profile.isDepot)
         _MenuItem(
           title: 'Dépôts',
-          subtitle: 'Réception, ventes, recouvrements',
+          subtitle: 'Réception, ventes, historique, recouvrements',
           icon: Icons.store,
-          onTap: () => _go(context, DepotsScreen(farmId: profile.farmId)),
+          onTap: () => _go(context, DepotsScreen(farmId: farmId)),
         ),
 
-      if (profile.isDepot || profile.isAdmin)
+      // ✅ Clients (DEPOT/ADMIN)
+      if (profile.isAdmin || profile.isDepot)
         _MenuItem(
           title: 'Clients',
-          subtitle: 'Gestion des clients',
+          subtitle: 'Créer / modifier / supprimer',
           icon: Icons.people,
-          onTap: () => _go(context, ClientsScreen(farmId: profile.farmId)),
+          onTap: () => _go(context, ClientsScreen(farmId: farmId)),
         ),
 
-      // ======== ADMIN ========
+      // ✅ Stock ferme (FERMIER/VETO/ADMIN)
+      if (profile.isAdmin || profile.isFarmer || profile.isVet)
+        _MenuItem(
+          title: 'Stock ferme (oeufs)',
+          subtitle: 'FARM_GLOBAL + calcul bâtiments',
+          icon: Icons.egg_alt,
+          onTap: () => _go(context, FarmStockScreen(farmId: farmId)),
+        ),
+
+      // ✅ Transfert ferme → dépôt (FERMIER/VETO/ADMIN)
+      if (profile.isAdmin || profile.isFarmer || profile.isVet)
+        _MenuItem(
+          title: 'Transfert ferme → dépôt',
+          subtitle: 'Par carton (stock conservé en oeufs)',
+          icon: Icons.swap_horiz,
+          onTap: () => _go(context, EggTransferFarmToDepotScreen(farmId: farmId)),
+        ),
+
+      // ✅ Admin
       if (profile.isAdmin)
         _MenuItem(
           title: 'Admin - Utilisateurs',
-          subtitle: 'Gestion des profils (roles/active)',
+          subtitle: 'Profils farms/farm_nkoteng/users',
           icon: Icons.admin_panel_settings,
           onTap: () => _go(context, const AdminUsersScreen()),
         ),
+
       if (profile.isAdmin)
         _MenuItem(
           title: 'Admin - Invitations',
-          subtitle: 'Invitations / provisioning',
-          icon: Icons.mark_email_read,
+          subtitle: 'Création / suivi des invitations',
+          icon: Icons.mark_email_unread,
           onTap: () => _go(context, const AdminInvitesScreen()),
         ),
     ];
@@ -105,81 +114,47 @@ class HomeScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _ProfileHeader(profile: profile),
-          const SizedBox(height: 12),
-          ...items.map((e) => _MenuTile(item: e)),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProfileHeader extends StatelessWidget {
-  final UserProfile profile;
-  const _ProfileHeader({required this.profile});
-
-  Color _roleColor(String role) {
-    switch (role) {
-      case 'ADMIN':
-        return Colors.red;
-      case 'VETERINAIRE':
-        return Colors.teal;
-      case 'DEPOT':
-        return Colors.indigo;
-      case 'FERMIER':
-      default:
-        return Colors.green;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final color = _roleColor(profile.role);
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: color.withOpacity(0.12),
-              child: Icon(Icons.person, color: color),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
                 children: [
-                  Text(
-                    profile.displayName.isNotEmpty ? profile.displayName : 'Utilisateur',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(profile.email),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: -6,
-                    children: [
-                      Chip(
-                        label: Text(profile.role),
-                        backgroundColor: color.withOpacity(0.12),
-                        side: BorderSide(color: color.withOpacity(0.5)),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      Chip(
-                        label: Text(profile.active ? 'Actif' : 'Inactif'),
-                        backgroundColor:
-                        (profile.active ? Colors.green : Colors.grey).withOpacity(0.12),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ],
+                  const CircleAvatar(child: Icon(Icons.person)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.displayName.isNotEmpty ? profile.displayName : 'Utilisateur',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(profile.email),
+                        const SizedBox(height: 8),
+                        Chip(
+                          label: Text(profile.role),
+                          backgroundColor: _roleColor(profile.role).withOpacity(0.12),
+                          side: BorderSide(color: _roleColor(profile.role).withOpacity(0.5)),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 16),
+          ...items.map((e) => Card(
+            child: ListTile(
+              leading: Icon(e.icon),
+              title: Text(e.title),
+              subtitle: Text(e.subtitle),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: e.onTap,
+            ),
+          )),
+        ],
       ),
     );
   }
@@ -197,22 +172,4 @@ class _MenuItem {
     required this.icon,
     required this.onTap,
   });
-}
-
-class _MenuTile extends StatelessWidget {
-  final _MenuItem item;
-  const _MenuTile({required this.item});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: ListTile(
-        leading: Icon(item.icon),
-        title: Text(item.title),
-        subtitle: Text(item.subtitle),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: item.onTap,
-      ),
-    );
-  }
 }

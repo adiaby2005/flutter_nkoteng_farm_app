@@ -4,11 +4,7 @@ import 'package:flutter/material.dart';
 
 class EggTransferFarmToDepotScreen extends StatefulWidget {
   final String farmId;
-
-  const EggTransferFarmToDepotScreen({
-    super.key,
-    required this.farmId,
-  });
+  const EggTransferFarmToDepotScreen({super.key, required this.farmId});
 
   @override
   State<EggTransferFarmToDepotScreen> createState() => _EggTransferFarmToDepotScreenState();
@@ -17,201 +13,185 @@ class EggTransferFarmToDepotScreen extends StatefulWidget {
 class _EggTransferFarmToDepotScreenState extends State<EggTransferFarmToDepotScreen> {
   final _db = FirebaseFirestore.instance;
 
+  static const List<String> _grades = ['SMALL', 'MEDIUM', 'LARGE', 'XL'];
+
   bool _loading = false;
   String? _message;
 
-  DateTime _date = DateTime.now();
-
   String? _selectedDepotId;
-  Map<String, dynamic>? _selectedDepot;
+  String? _selectedDepotName;
 
-  // Sorties (en cartons + alvéoles + isolés)
-  final _goodSmallCartonsCtrl = TextEditingController();
-  final _goodSmallAlveolesCtrl = TextEditingController();
-  final _goodSmallIsolatedCtrl = TextEditingController();
+  // CTI inputs for GOOD eggs per grade
+  final Map<String, TextEditingController> _goodCartons = {
+    'SMALL': TextEditingController(text: '0'),
+    'MEDIUM': TextEditingController(text: '0'),
+    'LARGE': TextEditingController(text: '0'),
+    'XL': TextEditingController(text: '0'),
+  };
+  final Map<String, TextEditingController> _goodTrays = {
+    'SMALL': TextEditingController(text: '0'),
+    'MEDIUM': TextEditingController(text: '0'),
+    'LARGE': TextEditingController(text: '0'),
+    'XL': TextEditingController(text: '0'),
+  };
+  final Map<String, TextEditingController> _goodIsolated = {
+    'SMALL': TextEditingController(text: '0'),
+    'MEDIUM': TextEditingController(text: '0'),
+    'LARGE': TextEditingController(text: '0'),
+    'XL': TextEditingController(text: '0'),
+  };
 
-  final _goodMedCartonsCtrl = TextEditingController();
-  final _goodMedAlveolesCtrl = TextEditingController();
-  final _goodMedIsolatedCtrl = TextEditingController();
+  // Broken total (no grades)
+  final TextEditingController _brokenCartonsCtrl = TextEditingController(text: '0');
+  final TextEditingController _brokenTraysCtrl = TextEditingController(text: '0');
+  final TextEditingController _brokenIsolatedCtrl = TextEditingController(text: '0');
 
-  final _goodLargeCartonsCtrl = TextEditingController();
-  final _goodLargeAlveolesCtrl = TextEditingController();
-  final _goodLargeIsolatedCtrl = TextEditingController();
+  final TextEditingController _noteCtrl = TextEditingController();
 
-  final _goodXlCartonsCtrl = TextEditingController();
-  final _goodXlAlveolesCtrl = TextEditingController();
-  final _goodXlIsolatedCtrl = TextEditingController();
+  // Stock cache (farm global)
+  Map<String, int> _farmGoodByGrade = {'SMALL': 0, 'MEDIUM': 0, 'LARGE': 0, 'XL': 0};
+  int _farmGoodTotal = 0;
+  int _farmBrokenTotal = 0;
 
-  final _brokenEggsCtrl = TextEditingController();
+  @override
+  void initState() {
+    super.initState();
+    _loadFarmStock(server: false);
+  }
 
   @override
   void dispose() {
-    _goodSmallCartonsCtrl.dispose();
-    _goodSmallAlveolesCtrl.dispose();
-    _goodSmallIsolatedCtrl.dispose();
-
-    _goodMedCartonsCtrl.dispose();
-    _goodMedAlveolesCtrl.dispose();
-    _goodMedIsolatedCtrl.dispose();
-
-    _goodLargeCartonsCtrl.dispose();
-    _goodLargeAlveolesCtrl.dispose();
-    _goodLargeIsolatedCtrl.dispose();
-
-    _goodXlCartonsCtrl.dispose();
-    _goodXlAlveolesCtrl.dispose();
-    _goodXlIsolatedCtrl.dispose();
-
-    _brokenEggsCtrl.dispose();
-
+    for (final c in _goodCartons.values) c.dispose();
+    for (final c in _goodTrays.values) c.dispose();
+    for (final c in _goodIsolated.values) c.dispose();
+    _brokenCartonsCtrl.dispose();
+    _brokenTraysCtrl.dispose();
+    _brokenIsolatedCtrl.dispose();
+    _noteCtrl.dispose();
     super.dispose();
   }
 
-  String _dateIso(DateTime d) {
-    final dd = DateTime(d.year, d.month, d.day);
-    final m = dd.month.toString().padLeft(2, '0');
-    final day = dd.day.toString().padLeft(2, '0');
-    return '${dd.year}-$m-$day';
-  }
+  DocumentReference<Map<String, dynamic>> get _farmRef =>
+      _db.collection('farms').doc(widget.farmId);
 
-  int _toInt(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+  DocumentReference<Map<String, dynamic>> get _farmGlobalStockRef =>
+      _farmRef.collection('stocks_eggs').doc('FARM_GLOBAL');
 
-  int _getInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return 0;
-  }
-
-  int _eggsFromCartonsAlveolesIsolated({
-    required int cartons,
-    required int alveoles,
-    required int isolated,
-  }) {
-    const eggsPerAlveole = 30;
-    const alveolesPerCarton = 12;
-    const eggsPerCarton = eggsPerAlveole * alveolesPerCarton; // 360
-    return cartons * eggsPerCarton + alveoles * eggsPerAlveole + isolated;
-  }
-
-  bool _validateIsolated0to29(int v) => v >= 0 && v <= 29;
-
-  Map<String, int> _goodOutByGrade() {
-    final s = _eggsFromCartonsAlveolesIsolated(
-      cartons: _toInt(_goodSmallCartonsCtrl),
-      alveoles: _toInt(_goodSmallAlveolesCtrl),
-      isolated: _toInt(_goodSmallIsolatedCtrl),
-    );
-    final m = _eggsFromCartonsAlveolesIsolated(
-      cartons: _toInt(_goodMedCartonsCtrl),
-      alveoles: _toInt(_goodMedAlveolesCtrl),
-      isolated: _toInt(_goodMedIsolatedCtrl),
-    );
-    final l = _eggsFromCartonsAlveolesIsolated(
-      cartons: _toInt(_goodLargeCartonsCtrl),
-      alveoles: _toInt(_goodLargeAlveolesCtrl),
-      isolated: _toInt(_goodLargeIsolatedCtrl),
-    );
-    final xl = _eggsFromCartonsAlveolesIsolated(
-      cartons: _toInt(_goodXlCartonsCtrl),
-      alveoles: _toInt(_goodXlAlveolesCtrl),
-      isolated: _toInt(_goodXlIsolatedCtrl),
-    );
-
-    return {
-      'SMALL': s,
-      'MEDIUM': m,
-      'LARGE': l,
-      'XL': xl,
-    };
-  }
-
-  int _brokenOutTotal() => _toInt(_brokenEggsCtrl);
-
-  int _sumGrades(Map<String, int> byGrade) =>
-      byGrade.values.fold<int>(0, (a, b) => a + b);
-
-  void _validate() {
-    if (_selectedDepotId == null) throw Exception("Veuillez sélectionner un dépôt.");
-
-    final isoSmall = _toInt(_goodSmallIsolatedCtrl);
-    final isoMed = _toInt(_goodMedIsolatedCtrl);
-    final isoLarge = _toInt(_goodLargeIsolatedCtrl);
-    final isoXl = _toInt(_goodXlIsolatedCtrl);
-
-    if (!_validateIsolated0to29(isoSmall)) throw Exception("Petit isolés: 0..29");
-    if (!_validateIsolated0to29(isoMed)) throw Exception("Moyen isolés: 0..29");
-    if (!_validateIsolated0to29(isoLarge)) throw Exception("Gros isolés: 0..29");
-    if (!_validateIsolated0to29(isoXl)) throw Exception("XL isolés: 0..29");
-
-    final goodOut = _goodOutByGrade();
-    final goodTotal = _sumGrades(goodOut);
-    final brokenTotal = _brokenOutTotal();
-
-    if (goodTotal == 0 && brokenTotal == 0) throw Exception("Aucune sortie à enregistrer.");
-  }
-
-  // ✅ Recalcul FARM_GLOBAL à partir des BUILDING_* uniquement (et l'écrit)
-  Future<void> _recomputeFarmGlobal() async {
-    setState(() {
-      _loading = true;
-      _message = null;
-    });
-
-    try {
-      final farmRef = _db.collection('farms').doc(widget.farmId);
-      final stocks = await farmRef.collection('stocks_eggs').get();
-
-      final Map<String, int> agg = {
-        'SMALL': 0,
-        'MEDIUM': 0,
-        'LARGE': 0,
-        'XL': 0,
-      };
-
-      int total = 0;
-
-      for (final doc in stocks.docs) {
-        if (!doc.id.startsWith('BUILDING_')) continue;
-        final data = doc.data();
-        final raw = data['eggsByGrade'];
-        final m = (raw is Map) ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
-
-        agg['SMALL'] = (agg['SMALL'] ?? 0) + _getInt(m['SMALL']);
-        agg['MEDIUM'] = (agg['MEDIUM'] ?? 0) + _getInt(m['MEDIUM']);
-        agg['LARGE'] = (agg['LARGE'] ?? 0) + _getInt(m['LARGE']);
-        agg['XL'] = (agg['XL'] ?? 0) + _getInt(m['XL']);
-      }
-
-      total = agg.values.fold<int>(0, (a, b) => a + b);
-
-      await farmRef.collection('stocks_eggs').doc('FARM_GLOBAL').set(
-        {
-          'kind': 'FARM_GLOBAL',
-          'refId': widget.farmId,
-          'eggsByGrade': agg,
-          'goodTotalEggs': total,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
-      setState(() => _message = "Stock ferme recalculé ✅");
-    } catch (e) {
-      setState(() => _message = "Erreur recalcul: $e");
-    } finally {
-      if (mounted) setState(() => _loading = false);
+  String _gradeFr(String g) {
+    switch (g) {
+      case 'SMALL':
+        return 'Petit';
+      case 'MEDIUM':
+        return 'Moyen';
+      case 'LARGE':
+        return 'Gros';
+      case 'XL':
+        return 'XL';
+      default:
+        return g;
     }
   }
 
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _date,
-      firstDate: DateTime(2022, 1, 1),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
-    );
-    if (picked != null && mounted) setState(() => _date = picked);
+  int _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse('${v ?? 0}') ?? 0;
   }
+
+  Map<String, dynamic> _asMap(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
+  }
+
+  int _parse(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
+
+  // 1 alvéole = 30 oeufs ; 1 carton = 12 alvéoles
+  static const int _eggsPerTray = 30;
+  static const int _traysPerCarton = 12;
+
+  int _eggsFromCTI({required int cartons, required int trays, required int isolated}) {
+    return ((cartons * _traysPerCarton + trays) * _eggsPerTray) + isolated;
+  }
+
+  Map<String, int> _ctiFromEggs(int eggs) {
+    if (eggs < 0) eggs = 0;
+    final perCarton = _traysPerCarton * _eggsPerTray;
+    final cartons = eggs ~/ perCarton;
+    final rem1 = eggs % perCarton;
+    final trays = rem1 ~/ _eggsPerTray;
+    final isolated = rem1 % _eggsPerTray;
+    return {'cartons': cartons, 'trays': trays, 'isolated': isolated};
+  }
+
+  void _validateCTI({required String label, required int cartons, required int trays, required int isolated}) {
+    if (cartons < 0 || trays < 0 || isolated < 0) {
+      throw Exception("$label : valeurs négatives interdites.");
+    }
+    if (trays > 11) {
+      throw Exception("$label : alvéoles doit être entre 0 et 11 (par carton).");
+    }
+    if (isolated > 29) {
+      throw Exception("$label : œufs isolés doit être entre 0 et 29.");
+    }
+  }
+
+  int _goodEggsForGrade(String g) {
+    return _eggsFromCTI(
+      cartons: _parse(_goodCartons[g]!),
+      trays: _parse(_goodTrays[g]!),
+      isolated: _parse(_goodIsolated[g]!),
+    );
+  }
+
+  int _brokenEggsTotal() {
+    return _eggsFromCTI(
+      cartons: _parse(_brokenCartonsCtrl),
+      trays: _parse(_brokenTraysCtrl),
+      isolated: _parse(_brokenIsolatedCtrl),
+    );
+  }
+
+  Future<void> _loadFarmStock({required bool server}) async {
+    try {
+      final snap = await _farmGlobalStockRef.get(GetOptions(
+        source: server ? Source.server : Source.serverAndCache,
+      ));
+      final data = snap.data() ?? <String, dynamic>{};
+
+      final eggsByGrade = _asMap(data['eggsByGrade']);
+      final goodTotal = _asInt(data['goodTotalEggs']);
+      final brokenTotal = _asInt(data['brokenTotalEggs']);
+
+      final map = <String, int>{
+        'SMALL': _asInt(eggsByGrade['SMALL']),
+        'MEDIUM': _asInt(eggsByGrade['MEDIUM']),
+        'LARGE': _asInt(eggsByGrade['LARGE']),
+        'XL': _asInt(eggsByGrade['XL']),
+      };
+
+      if (!mounted) return;
+      setState(() {
+        _farmGoodByGrade = map;
+        _farmGoodTotal = goodTotal;
+        _farmBrokenTotal = brokenTotal;
+      });
+    } catch (_) {
+      // ne bloque pas l'écran
+    }
+  }
+
+  void _snack(String msg, {bool ok = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+  }
+
+  String _transferLockId(String depotId, String payloadHash) =>
+      ['EGG_TRANSFER_FARM_TO_DEPOT', widget.farmId, depotId, payloadHash].join('|');
 
   Future<void> _saveTransfer() async {
     setState(() {
@@ -220,296 +200,476 @@ class _EggTransferFarmToDepotScreenState extends State<EggTransferFarmToDepotScr
     });
 
     try {
-      _validate();
+      final depotId = _selectedDepotId;
+      final depotName = _selectedDepotName;
 
-      final dateIso = _dateIso(_date);
-      final farmRef = _db.collection('farms').doc(widget.farmId);
+      if (depotId == null || depotId.isEmpty) {
+        throw Exception("Veuillez sélectionner un dépôt.");
+      }
 
-      final goodOut = _goodOutByGrade();
-      final brokenOut = _brokenOutTotal();
+      // Validate inputs
+      for (final g in _grades) {
+        _validateCTI(
+          label: "Bons (${_gradeFr(g)})",
+          cartons: _parse(_goodCartons[g]!),
+          trays: _parse(_goodTrays[g]!),
+          isolated: _parse(_goodIsolated[g]!),
+        );
+      }
+      _validateCTI(
+        label: "Casses",
+        cartons: _parse(_brokenCartonsCtrl),
+        trays: _parse(_brokenTraysCtrl),
+        isolated: _parse(_brokenIsolatedCtrl),
+      );
 
-      final movementRef = farmRef.collection('egg_movements').doc();
+      // Build eggs to transfer
+      final goodOutByGrade = <String, int>{
+        'SMALL': _goodEggsForGrade('SMALL'),
+        'MEDIUM': _goodEggsForGrade('MEDIUM'),
+        'LARGE': _goodEggsForGrade('LARGE'),
+        'XL': _goodEggsForGrade('XL'),
+      };
+      final goodOutTotal = goodOutByGrade.values.fold<int>(0, (a, b) => a + b);
+      final brokenOutTotal = _brokenEggsTotal();
 
-      final uniqueKey = [
-        'TRANSFER_FARM_TO_DEPOT',
-        widget.farmId,
-        dateIso,
-        _selectedDepotId!,
-        _sumGrades(goodOut).toString(),
-        brokenOut.toString(),
-      ].join('|');
+      if (goodOutTotal == 0 && brokenOutTotal == 0) {
+        throw Exception("Aucune quantité saisie.");
+      }
 
-      final lockRef = farmRef.collection('idempotency').doc(uniqueKey);
+      // Prepare refs
+      final farmGlobalRef = _farmGlobalStockRef;
+      final depotStockRef = _farmRef.collection('stocks_eggs').doc('DEPOT_$depotId');
+      final movementRef = _farmRef.collection('egg_movements').doc();
 
-      final farmGlobalRef = farmRef.collection('stocks_eggs').doc('FARM_GLOBAL');
-      final depotStockRef =
-      farmRef.collection('stocks_eggs').doc('DEPOT_${_selectedDepotId!}');
+      // Idempotency lock based on payload (simple & stable)
+      final payloadHash = [
+        DateTime.now().toIso8601String().substring(0, 10), // day
+        goodOutByGrade['SMALL'],
+        goodOutByGrade['MEDIUM'],
+        goodOutByGrade['LARGE'],
+        goodOutByGrade['XL'],
+        brokenOutTotal,
+        depotId,
+      ].join('_');
+
+      final lockRef = _farmRef.collection('idempotency').doc(_transferLockId(depotId, payloadHash));
 
       await _db.runTransaction((tx) async {
-        final lock = await tx.get(lockRef);
-        if (lock.exists) return;
+        // ✅ IMPORTANT: all reads first
+        final lockSnap = await tx.get(lockRef);
+        if (lockSnap.exists) return;
 
-        final fgSnap = await tx.get(farmGlobalRef);
-        final fgData = fgSnap.data() ?? <String, dynamic>{};
+        final farmSnap = await tx.get(farmGlobalRef);
+        final depotSnap = await tx.get(depotStockRef);
 
-        final fgByGradeDyn =
-        (fgData['eggsByGrade'] is Map) ? Map<String, dynamic>.from(fgData['eggsByGrade']) : <String, dynamic>{};
+        final farmData = farmSnap.data() ?? <String, dynamic>{};
+        final farmEggsByGrade = _asMap(farmData['eggsByGrade']);
 
-        int fgCur(String g) => (fgByGradeDyn[g] is num) ? (fgByGradeDyn[g] as num).toInt() : 0;
+        int farmGood(String g) => _asInt(farmEggsByGrade[g]);
+        final farmGoodTotal = _asInt(farmData['goodTotalEggs']);
+        final farmBrokenTotal = _asInt(farmData['brokenTotalEggs']);
 
-        // vérifier dispo
-        for (final g in const ['SMALL', 'MEDIUM', 'LARGE', 'XL']) {
-          final need = goodOut[g] ?? 0;
-          final cur = fgCur(g);
-          if (need > cur) {
-            throw Exception("Stock insuffisant ($g): demandé=$need disponible=$cur");
+        // Validate availability (farm)
+        for (final g in _grades) {
+          final want = goodOutByGrade[g] ?? 0;
+          final have = farmGood(g);
+          if (want > have) {
+            throw Exception("Stock ferme insuffisant (${_gradeFr(g)}) : $have dispo, $want demandé.");
           }
         }
+        if (brokenOutTotal > farmBrokenTotal) {
+          throw Exception("Stock ferme insuffisant (cassés) : $farmBrokenTotal dispo, $brokenOutTotal demandé.");
+        }
 
-        // Update FARM_GLOBAL (sortie)
-        final Map<String, int> fgNewByGrade = {
-          'SMALL': fgCur('SMALL') - (goodOut['SMALL'] ?? 0),
-          'MEDIUM': fgCur('MEDIUM') - (goodOut['MEDIUM'] ?? 0),
-          'LARGE': fgCur('LARGE') - (goodOut['LARGE'] ?? 0),
-          'XL': fgCur('XL') - (goodOut['XL'] ?? 0),
+        final now = FieldValue.serverTimestamp();
+
+        // ---- Update FARM_GLOBAL (decrement)
+        final Map<String, dynamic> farmUpdates = {
+          'updatedAt': now,
+          'source': 'farm_to_depot_transfer',
+          'computedFrom': 'MOVEMENTS', // optionnel, indicatif
+          'goodTotalEggs': FieldValue.increment(-goodOutTotal),
+          'brokenTotalEggs': FieldValue.increment(-brokenOutTotal),
         };
+        for (final g in _grades) {
+          final v = goodOutByGrade[g] ?? 0;
+          if (v != 0) {
+            farmUpdates['eggsByGrade.$g'] = FieldValue.increment(-v);
+          }
+        }
+        tx.set(farmGlobalRef, {'updatedAt': now}, SetOptions(merge: true));
+        tx.update(farmGlobalRef, farmUpdates);
 
-        final fgGoodTotal = (fgData['goodTotalEggs'] ?? fgData['totalGoodEggs'] ?? 0) is num
-            ? ((fgData['goodTotalEggs'] ?? fgData['totalGoodEggs'] ?? 0) as num).toInt()
-            : 0;
-
-        final goodTotalOut = _sumGrades(goodOut);
-
-        tx.set(
-          farmGlobalRef,
-          {
-            'eggsByGrade': fgNewByGrade,
-            'goodTotalEggs': fgGoodTotal - goodTotalOut,
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
-
-        // Update depot stock (entrée)
-        final dsSnap = await tx.get(depotStockRef);
-        final dsData = dsSnap.data() ?? <String, dynamic>{};
-
-        final dsByGradeDyn =
-        (dsData['eggsByGrade'] is Map) ? Map<String, dynamic>.from(dsData['eggsByGrade']) : <String, dynamic>{};
-
-        int dsCur(String g) => (dsByGradeDyn[g] is num) ? (dsByGradeDyn[g] as num).toInt() : 0;
-
-        final Map<String, int> dsNewByGrade = {
-          'SMALL': dsCur('SMALL') + (goodOut['SMALL'] ?? 0),
-          'MEDIUM': dsCur('MEDIUM') + (goodOut['MEDIUM'] ?? 0),
-          'LARGE': dsCur('LARGE') + (goodOut['LARGE'] ?? 0),
-          'XL': dsCur('XL') + (goodOut['XL'] ?? 0),
+        // ---- Update DEPOT stock (increment)
+        final Map<String, dynamic> depotUpdates = {
+          'updatedAt': now,
+          'source': 'farm_to_depot_transfer',
+          'depotId': depotId,
+          'goodTotalEggs': FieldValue.increment(goodOutTotal),
+          'brokenTotalEggs': FieldValue.increment(brokenOutTotal),
         };
+        for (final g in _grades) {
+          final v = goodOutByGrade[g] ?? 0;
+          if (v != 0) {
+            depotUpdates['eggsByGrade.$g'] = FieldValue.increment(v);
+          }
+        }
+        tx.set(depotStockRef, {'updatedAt': now}, SetOptions(merge: true));
+        // depotSnap is read above (ok) even if doc doesn't exist yet; update requires existence -> so use set(merge)
+        tx.set(depotStockRef, depotUpdates, SetOptions(merge: true));
 
-        final dsGoodTotal = (dsData['goodTotalEggs'] ?? dsData['totalGoodEggs'] ?? 0) is num
-            ? ((dsData['goodTotalEggs'] ?? dsData['totalGoodEggs'] ?? 0) as num).toInt()
-            : 0;
-
-        tx.set(
-          depotStockRef,
-          {
-            'kind': 'DEPOT',
-            'refId': _selectedDepotId!,
-            'eggsByGrade': dsNewByGrade,
-            'goodTotalEggs': dsGoodTotal + goodTotalOut,
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
-
-        // Movement
+        // ---- Movement doc (for receipt dropdown on depot side)
         tx.set(movementRef, {
-          'type': 'FARM_TO_DEPOT',
-          'date': dateIso,
-          'from': {'kind': 'FARM', 'farmId': widget.farmId},
-          'to': {'kind': 'DEPOT', 'depotId': _selectedDepotId, 'depotName': _selectedDepot?['name']},
-          'goodOutByGrade': goodOut,
-          'goodTotalOut': goodTotalOut,
-          'brokenOut': brokenOut,
-          'createdAt': FieldValue.serverTimestamp(),
+          'type': 'TRANSFER_FARM_TO_DEPOT',
+          'status': 'SENT', // réception fera un lock et/ou un mouvement RECEIPT
+          'date': DateTime.now().toIso8601String().substring(0, 10),
+          'from': {
+            'kind': 'FARM',
+            'farmId': widget.farmId,
+          },
+          'to': {
+            'kind': 'DEPOT',
+            'depotId': depotId,
+            'depotName': depotName ?? depotId,
+          },
+          'goodOutByGrade': goodOutByGrade,
+          'goodOutTotalEggs': goodOutTotal,
+          'brokenOut': {
+            'totalBrokenEggs': brokenOutTotal,
+          },
+          'note': _noteCtrl.text.trim(),
+          'createdAt': now,
           'source': 'mobile_app',
         });
 
-        tx.set(lockRef, {'createdAt': FieldValue.serverTimestamp(), 'kind': 'TRANSFER_FARM_TO_DEPOT'});
+        // ---- Lock
+        tx.set(lockRef, {
+          'kind': 'EGG_TRANSFER_FARM_TO_DEPOT',
+          'createdAt': now,
+        });
       });
 
-      setState(() => _message = "Transfert enregistré ✅");
+      // reload stock server
+      await _loadFarmStock(server: true);
+
+      // reset inputs
+      for (final g in _grades) {
+        _goodCartons[g]!.text = '0';
+        _goodTrays[g]!.text = '0';
+        _goodIsolated[g]!.text = '0';
+      }
+      _brokenCartonsCtrl.text = '0';
+      _brokenTraysCtrl.text = '0';
+      _brokenIsolatedCtrl.text = '0';
+      _noteCtrl.clear();
+
+      if (!mounted) return;
+      setState(() {
+        _message = "✅ Transfert enregistré";
+      });
+      _snack("✅ Transfert enregistré", ok: true);
     } catch (e) {
-      setState(() => _message = "Erreur: $e");
+      if (!mounted) return;
+      setState(() {
+        _message = "❌ ${e.toString()}";
+      });
+      _snack("❌ ${e.toString()}");
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final dateIso = _dateIso(_date);
-
-    final depotsQuery = _db
-        .collection('farms')
-        .doc(widget.farmId)
-        .collection('depots')
-        .orderBy('name');
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Transfert œufs → dépôt"),
-        actions: [
-          IconButton(
-            tooltip: "Recalculer stock ferme",
-            onPressed: _loading ? null : _recomputeFarmGlobal,
-            icon: const Icon(Icons.refresh),
-          ),
-          TextButton.icon(
-            onPressed: _loading ? null : _pickDate,
-            icon: const Icon(Icons.date_range),
-            label: Text(dateIso),
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (_message != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                _message!,
-                style: TextStyle(
-                  color: (_message!.startsWith('Erreur')) ? Colors.red : Colors.green,
-                ),
-              ),
-            ),
-
-          const Text("Dépôt", style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: depotsQuery.snapshots(),
-            builder: (context, snap) {
-              if (snap.connectionState == ConnectionState.waiting) {
-                return const LinearProgressIndicator();
-              }
-              if (snap.hasError) {
-                return Text("Erreur dépôts: ${snap.error}", style: const TextStyle(color: Colors.red));
-              }
-
-              final docs = snap.data?.docs ?? [];
-              if (docs.isEmpty) return const Text("Aucun dépôt.");
-
-              return DropdownButtonFormField<String>(
-                value: _selectedDepotId,
-                items: docs
-                    .map((d) => DropdownMenuItem(
-                  value: d.id,
-                  child: Text((d.data()['name'] ?? d.id).toString()),
-                ))
-                    .toList(),
-                onChanged: _loading
-                    ? null
-                    : (v) {
-                  setState(() {
-                    _selectedDepotId = v;
-                    _selectedDepot = docs.firstWhere((e) => e.id == v).data();
-                  });
-                },
-                decoration: const InputDecoration(border: OutlineInputBorder()),
-              );
-            },
-          ),
-
-          const SizedBox(height: 16),
-          const Text("Sortie (bons œufs) - par cartons / alvéoles / isolés",
-              style: TextStyle(fontWeight: FontWeight.bold)),
-
-          const SizedBox(height: 12),
-          _gradeBlock("Petit", _goodSmallCartonsCtrl, _goodSmallAlveolesCtrl, _goodSmallIsolatedCtrl),
-          _gradeBlock("Moyen", _goodMedCartonsCtrl, _goodMedAlveolesCtrl, _goodMedIsolatedCtrl),
-          _gradeBlock("Gros", _goodLargeCartonsCtrl, _goodLargeAlveolesCtrl, _goodLargeIsolatedCtrl),
-          _gradeBlock("XL", _goodXlCartonsCtrl, _goodXlAlveolesCtrl, _goodXlIsolatedCtrl),
-
-          const SizedBox(height: 12),
-          TextField(
-            controller: _brokenEggsCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: "Casses (œufs)",
-              border: OutlineInputBorder(),
-            ),
-          ),
-
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _loading ? null : _saveTransfer,
-              icon: _loading
-                  ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.save),
-              label: Text(_loading ? "Enregistrement..." : "Enregistrer"),
-            ),
-          ),
-        ],
-      ),
+  Widget _kv(String k, String v) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$k : ', style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text(v),
+      ],
     );
   }
 
-  Widget _gradeBlock(
-      String label,
-      TextEditingController cartonsCtrl,
-      TextEditingController alveolesCtrl,
-      TextEditingController isolatedCtrl,
-      ) {
+  Widget _ctiInputs(String grade) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _goodCartons[grade],
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Cartons',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextField(
+            controller: _goodTrays[grade],
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Alvéoles',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextField(
+            controller: _goodIsolated[grade],
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Isolés',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _brokenInputs() {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _brokenCartonsCtrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Cartons',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextField(
+            controller: _brokenTraysCtrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Alvéoles',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: TextField(
+            controller: _brokenIsolatedCtrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Isolés',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _gradeCard(String grade) {
+    final farmEggs = _farmGoodByGrade[grade] ?? 0;
+    final cti = _ctiFromEggs(farmEggs);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(_gradeFr(grade), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(
+              "Stock ferme dispo : ${cti['cartons']} carton(s) / ${cti['trays']} alvéole(s) / ${cti['isolated']} isolé(s) (≈ $farmEggs œufs)",
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: cartonsCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Cartons",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: alveolesCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Alvéoles",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: isolatedCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Isolés (0..29)",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
+            _ctiInputs(grade),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _brokenCard() {
+    final cti = _ctiFromEggs(_farmBrokenTotal);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Casses (total)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(
+              "Stock ferme dispo : ${cti['cartons']} carton(s) / ${cti['trays']} alvéole(s) / ${cti['isolated']} isolé(s) (≈ $_farmBrokenTotal œufs)",
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 10),
+            _brokenInputs(),
+            const SizedBox(height: 8),
+            Text(
+              "NB: les casses ne sont pas ventilées par calibre (logique finale).",
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final goodSumMap = _farmGoodByGrade.values.fold<int>(0, (a, b) => a + b);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Transfert Ferme → Dépôt'),
+        actions: [
+          IconButton(
+            tooltip: 'Actualiser stock (serveur)',
+            onPressed: () async {
+              await _loadFarmStock(server: true);
+              _snack("Stock ferme actualisé ✅", ok: true);
+            },
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Résumé stock ferme', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 6,
+                    children: [
+                      _kv('Bons (stockés)', '$_farmGoodTotal'),
+                      _kv('Bons (recalcul map)', '$goodSumMap'),
+                      _kv('Cassés', '$_farmBrokenTotal'),
+                    ],
+                  ),
+                  if (_farmGoodTotal != goodSumMap) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      "⚠️ Incohérence détectée: goodTotalEggs($_farmGoodTotal) ≠ somme eggsByGrade($goodSumMap).\n"
+                          "L'écran se base sur eggsByGrade (plus fiable).",
+                      style: const TextStyle(color: Colors.deepOrange, fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Depot selector
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Dépôt destination', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _farmRef.collection('depots').orderBy('name').snapshots(),
+                    builder: (context, snap) {
+                      if (snap.hasError) return Text("Erreur dépôts: ${snap.error}");
+                      if (!snap.hasData) return const LinearProgressIndicator();
+
+                      final docs = snap.data!.docs;
+                      if (docs.isEmpty) return const Text("Aucun dépôt.");
+
+                      return DropdownButtonFormField<String>(
+                        value: _selectedDepotId,
+                        items: docs.map((d) {
+                          final name = (d.data()['name'] ?? '').toString().trim();
+                          final label = name.isEmpty ? d.id : name;
+                          return DropdownMenuItem(
+                            value: d.id,
+                            child: Text(label),
+                          );
+                        }).toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          final doc = docs.firstWhere((x) => x.id == v);
+                          final name = (doc.data()['name'] ?? '').toString().trim();
+                          setState(() {
+                            _selectedDepotId = v;
+                            _selectedDepotName = name.isEmpty ? v : name;
+                          });
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Choisir un dépôt',
+                          border: OutlineInputBorder(),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Grade cards (stock shown inside each grade card)
+          for (final g in _grades) _gradeCard(g),
+
+          // Broken (total)
+          _brokenCard(),
+
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                controller: _noteCtrl,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Note (optionnel)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          if (_message != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                _message!,
+                style: TextStyle(
+                  color: (_message!.startsWith('✅')) ? Colors.green : Colors.red,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+
+          FilledButton.icon(
+            onPressed: _loading ? null : _saveTransfer,
+            icon: _loading
+                ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.swap_horiz),
+            label: Text(_loading ? 'Enregistrement...' : 'Enregistrer le transfert'),
+          ),
+
+          const SizedBox(height: 24),
+        ],
       ),
     );
   }
